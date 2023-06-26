@@ -327,6 +327,7 @@ class seqHandler:
             return os.path.dirname(csv_file)
             
     #There's probably a base python way of doing this but I'm being impatient.
+    #Sets?
     def getUniqueSpecies(self) -> list:
         species_list = []
         for tool in self._fasta_tools:
