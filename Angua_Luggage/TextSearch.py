@@ -15,8 +15,8 @@ def parseArguments():
     #Consider .add_mutually_exclusive_group for fastas and nofull.
     #Probably worth breaking into subcommands by now nd running those from main.
     
-    parser.add_argument("file",
-                       help = "Blast .xml file to search.")
+    parser.add_argument("in_dir",
+                       help = "Folder containing .xml file(s).")
     parser.add_argument("output",
                         help = "Output folder.")
     parser.add_argument("-a", "--all", 
@@ -25,7 +25,7 @@ def parseArguments():
     parser.add_argument("-st", "--searchterm",
                         help = "Text to look for in the Blast output. Default VIRUS. Use a .txt file, one per line, for a whitelist.",
                         default = "virus")
-    parser.add_argument("-ml", "--minlength",
+    parser.add_argument("-ml", "--minlen",
                         help = "Minimum contig length to check. Default 200.",
                         type = int, default = 200)
     parser.add_argument("-b", "--bitscore",
@@ -61,67 +61,61 @@ def unpackTxt(text_file: str) -> list:
         new_list = [term.upper() for term in data.split("\n") if term != ""]
         return new_list
     
-def runTextSearch(in_file: str, output: str, **kwargs):
-    handler = None
-    if kwargs["search_term"].endswith(".txt"):
-        search_term = unpackTxt(kwargs["search_term"])
+def runTextSearch(in_file: str, output: str, options):
+    if options.search_term.endswith(".txt"):
+        search_term = unpackTxt(options.search_term)
             
-    if kwargs["blacklist"].endswith(".txt"):
-        blacklist = unpackTxt(kwargs["blacklist"])
+    if options.blacklist.endswith(".txt"):
+        blacklist = unpackTxt(options.blacklist)
 
     handler = seqHandler(xml = in_file)
     handler.addFolder("out", output)
-    handler.get_BlastRecord(list(search_term), list(blacklist), kwargs["minlength"], kwargs["get_all"], kwargs["bitscore"], kwargs["ictv"])
+    handler.get_BlastRecord(list(search_term), list(blacklist), options.minlen, options.get_all, options.bitscore, options.ictv)
     
-    if kwargs["contigs"]:
+    if options.contigs:
         sample_name = os.path.splitext(os.path.basename(in_file))[0]
-        contig_file = os.path.join(kwargs["contigs"], f"{sample_name}.fasta")
+        contig_file = os.path.join(options.contigs, f"{sample_name}.fasta")
         handler.addFasta(contig_file)
         handler.unpackBlastRecord()
         #Need to change this to work with the individual search terms.
         handler.outputFasta("vir", by_species = True)
     
-    if kwargs["output_csv"] or kwargs["fastas"]:
+    if koptions.output_csv or options.fastas:
         handler.outputCSV(os.path.splitext(os.path.basename(in_file))[0], "vir")
     #handler.outputFullLog(["Alignments"])
     return handler
     
 #Should modify this to search a whole folder or else mergeCSVOutput will run repeatedly.
-def runTextSearchOnFolder(in_dir: str, output: str, **kwargs):
+def main():
+    options = parseArguments()
     handler = None
-    if not os.path.exists(output):
+    if not os.path.exists(options.output):
         os.mkdir(output)
     logFileOutput(output, "Luggage")
     
-    for file in os.scandir(in_dir):
+    for file in os.scandir(options.in_dir):
         if file.name.endswith(".xml"):
-            handler = runTextSearch(in_file = os.path.join(in_dir, file.name), output = output, **kwargs)
+            handler = runTextSearch(in_file = os.path.join(in_dir, file.name), output = output, options)
     
     if not handler:
         #Do this as an exception instead.
         print("No .xml found. Wrong folder?")
         quit()
     
-    if not kwargs["no_full"]:
+    if not options.no_full:
         merged_csv = handler.mergeCSVOutput()
     
-    if kwargs["fastas"]:
-        handler.TextSearchToFasta(output, kwargs["email"]) 
-        if kwargs["raw"]:
+    if options.fastas:
+        handler.TextSearchToFasta(output, options.email) 
+        if options.raw:
             bwa_outdir = os.path.join(output, "bwa")
-            handler.runBwaTS(raw_dir = kwargs["raw"], bwa_dir = bwa_outdir)
+            handler.runBwaTS(raw_dir = options.raw, bwa_dir = bwa_outdir)
             handler.addToCSV(merged_csv)
         #Add reads mapped to .csv file using pandas.
         
 #Allows running as standalone if need be - it will unpack the arguments itself.
 #We're looking for a way to avoid the repetition. 
 if __name__ == '__main__':
-    options = parseArguments()
     logger = new_logger(name = __name__, output_dir = options.output)
-    sys.exit(runTextSearchOnFolder(options.file, options.output, 
-                                   search_term = options.searchterm, get_all = options.all, 
-                                   minlength = options.minlength, output_csv = options.outputcsv, 
-                                   bitscore = options.bitscore, ictv = options.ictv, 
-                                   no_full = options.nofull, fastas = options.fastas, 
-                                   email = options.email, blacklist = options.blacklist, 
-                                   raw = options.raw, contigs = options.contigs))
+    result = main()
+    logger.info(result)
