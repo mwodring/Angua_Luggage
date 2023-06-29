@@ -219,21 +219,6 @@ class fileHandler:
         Cleanup([self._dirs["acc"]], [".amb", ".ann", ".bwt", ".pac", ".sa"])
         return tsv_files
     
-    #Some of these static methods might be better moved to their own class.
-    @staticmethod
-    def splitBbduk(trimmed_dir):
-        for file in os.scandir(trimmed_dir):
-            if file.name.endswith("_R1.fastq.gz"):
-                filename = "".join(file.name.split(".")[-3])
-                R2_file = f"{filename.replace('_R1', '_R2')}.fastq.gz"
-                os.mkdir(os.path.join(trimmed_dir, filename[:-3]))
-                shmove(os.path.join(trimmed_dir, file.name), 
-                       os.path.join(trimmed_dir, filename[:-3], 
-                       file.name))
-                shmove(os.path.join(trimmed_dir, R2_file), 
-                       os.path.join(trimmed_dir, filename[:-3], 
-                       R2_file))
-    
     def coverageToTSV(self, bwa_file: str, 
                        sample_name: str, seq_name: str) -> str:
         num_mapped_reads = bwaHandler.getNumMappedReads(bwa_file, 

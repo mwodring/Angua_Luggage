@@ -6,7 +6,7 @@ import os
 def backMapToBedGraph(trimmed_dir: str, outputdir: str, ref_file: str):
     just_filename = os.path.basename(ref_file)
     ref_sample_name = "_".join(just_filename.split("_")[:4])
-    seqHandler.splitBbduk(trimmed_dir)
+    splitBbduk(trimmed_dir)
     for d in os.listdir(trimmed_dir):
         if d == ref_sample_name:
             back_mapper(input_dir = os.path.join(trimmed_dir, d), 
@@ -26,6 +26,19 @@ def backMapToBedGraph(trimmed_dir: str, outputdir: str, ref_file: str):
                     bg_outfile = os.path.join(out_dir, , d, seq.name)
                     bg_proc = subprocess.Popen(["bedtools", "genomecov", "-bg", "ibam", bg_outfile], stdout = PIPE)
                     gz_proc = subprocess.Popen(["gzip"], stdin = bg_proc, stdout = gz_outfile)
+
+def splitBbduk(trimmed_dir):
+    for file in os.scandir(trimmed_dir):
+        if file.name.endswith("_R1.fastq.gz"):
+            filename = "".join(file.name.split(".")[-3])
+            R2_file = f"{filename.replace('_R1', '_R2')}.fastq.gz"
+            os.mkdir(os.path.join(trimmed_dir, filename[:-3]))
+            shmove(os.path.join(trimmed_dir, file.name), 
+                   os.path.join(trimmed_dir, filename[:-3], 
+                   file.name))
+            shmove(os.path.join(trimmed_dir, R2_file), 
+                   os.path.join(trimmed_dir, filename[:-3], 
+                   R2_file))
 
 def fetchSRA(output_folder: str, accession: str):
     #Trying to move away from FastaKit logging to getting Angua to do it but unsure how to do that here.
