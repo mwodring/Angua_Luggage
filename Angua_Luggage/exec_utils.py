@@ -67,3 +67,13 @@ def getNumMappedReads(bwa_file: str, sample_name: str, seq_name: str, bwa_folder
     num_mapped_reads = num_mapped_reads.strip()
     num_mapped_reads = num_mapped_reads.decode("utf8")
     return num_mapped_reads
+    
+def runBwa(fa, bwa_reads, out_file):
+    subprocess.run(["bwa", "index", fa])
+    bwa_proc = subprocess.Popen(["bwa", "mem", "-v", "0", "-t", 
+                                 "12", "-v", "3",
+                                 fa, bwa_reads], stdout = PIPE)
+    view_proc = subprocess.Popen(["view", "-S", "-b"], 
+                                 stdin = bwa_proc, stdout = PIPE)
+    sort_proc = subprocess.Popen(["samtools", "sort"], 
+                                 stdout = out_file) 

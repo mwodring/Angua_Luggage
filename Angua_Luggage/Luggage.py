@@ -5,52 +5,47 @@ Created on Fri May 19 15:51:33 2023
 @author: mwodring
 """
 
+import logging
 import os
 import re
 import subprocess
 import pandas as pd
 import csv
-from shutil import move as 
+from shutil import move as shmove
 from collections import defaultdict
 
 from Bio import SeqIO, SearchIO
 from Bio.SeqRecord import SeqRecord
 from Bio.Blast import NCBIXML
 
-from .utils import new_logger, count_calls, Cleanup, add_logger_outdir
+from .utils import count_calls, Cleanup
 import .exec_utils
 
-import importlib.resources
-from . import data
-
-from xml.parsers.expat import ExpatError
-#Angua_test needs changing to Python 3.9+ to use resources.files.
-fa_yaml = importlib.resources.open_binary(data, "fastaTool.yaml")
-fastaTool_dict = yaml.full_load(fa_yaml)
+LOG = logging.getLogger(__name__).addHandler(logging.NullHandler())
 
 #fileHandler deals with file and folder management and keeps tabs on 
 #which fasta reflects which blast, etcetera. It also deals with 
 #file renaming. 
 class fileHandler:
     def __init__(self, init_dir: str, dir_kind = "misc"):
-        self.resetFolders()
+        self._resetFolders()
         self.addFolder(dir_kind, init_dir)
-        self.toolBelt = toolBelt()
+        self._toolBelt = toolBelt()
     
     #Set folders to an empty dict.
-    def resetFolders(self):
+    def _resetFolders(self):
         self._dirs = {}
     
     #Adds a folder to track, with its 
-    def addFolder(self, dir_kind: str, dir: str):
-        if not os.path.exists(dir)
-            os.mkdir(dir)
-        self._dirs[dir_kind] = dir
+    def addFolder(self, dir_kind: str, add_dir: str):
+        if not os.path.exists(add_dir)
+            os.mkdir(add_dir)
+        self._dirs[dir_kind] = add_dir
     
     def getFolder(self, dir_kind: str):
         if self._dirs[dir_kind]:
             return self._dirs[dir_kind]
-        raise ValueError("No dir of this type.")
+        LOG.warn("Attempt to access non-existent directory.")
     
     def getFiles(self, dir_kind: str, file_end = "*"):
         dir_name = self.getFolder(dir_kind)
@@ -60,19 +55,40 @@ class fileHandler:
                 
     def addFastaFile(self, filename: str, frame = 1, 
                      ID = "N/A", species = "N/A"):
-        self.toolBelt.addFastaTool(filename, frame, ID, species)
+        self._toolBelt.addFastaTool(filename, frame, ID, species)
     
+    #Simple but it's a function in case it later wants validation.
     def addBlast(self, filename: str, ictv = False):
-        self.toolBelt.addBlastTool(filename, ictv)
+        self._toolBelt.addBlastTool(filename, ictv)
     
-    def fastaFromBlastHits(self):
-        fas = {filename, fa for filename, fa in 
-               self.toolBelt.process_all("blast", unpack)}
+    def findBlastTools(self, ictv = False):
+        blasts = self.getFiles("xml", ".xml")
+        if not blasts:
+            #Raise an error here.
+            LOG.critical("No .xml files in input folder.")
+        for xml in blasts:
+            self.addBlast(file, ictv)
+            yield xml
+    
+    def findFastaTools(self, look_dir = "contigs"):
+        fastas = self.getFiles(look_dir, ".fasta")
+        if not blasts:
+            LOG.critical("No .fasta files bla bla")
+        for fasta in fastas:
+            self.addFastaFile(fasta)
+            yield fasta
+        
+    def parseAlignments(self, search_params = None):
+        self._toolBelt.parseAlignments()
+            
+    def updateFastaInfo(self):
+        info = {filename, info for filename, info in 
+                self._toolBelt.process_all("blast", getHitFastaInfo)}
         for filename, fa in fas:
-            self.toolBelt.labelFasta(filename, 
-                                     frame = fa["Frame"], 
-                                     to_label = fa["contig_id"], 
-                                     species = fa["Species"])
+            self._toolBelt.labelFasta(filename, 
+                                      frame = info["Frame"], 
+                                      to_label = info["contig_id"], 
+                                      species = info["Species"])
     
     def mergeCSVOutput(self):
         out_csv = csvHandler(list(blastTool.header))
@@ -86,7 +102,7 @@ class fileHandler:
             csv_file = self.merged_csv
         out_csv = csvHandler(["sample", "species", "read_no"])
         for file in self.getFiles("bwa", ".tsv"):
-            out_csv.addTSVContents(file)
+            out_csv.appendTSVContents(file)
         out_csv.outputMappedReads(dir_name = self.getFolder("csv"), 
                                   csv_file = csv_file)
    
@@ -113,17 +129,32 @@ class fileHandler:
             #Returns the sample number for logging purposes if so desired.
         return sample_num
     
-    def fetchSRAList(self, outout_dir: str, SRA_file: str):
+    def fetchSRAList(self, output_dir: str, SRA_file: str):
         results = []
         self.addFolder(add_dir = out_dir, dir_kind = "raw")
         with open(SRA_file, "r") as accessions:
             for accession in accessions.readlines():
                 result = exec_utils.fetchSRA(out_dir, accession)
                 results.append(result)
-                
-    def textSearchToFasta(self, out_dir: str, email: str):
-        hit_dir = os.path.join(out_dir, "hit_fastas")
-        self.addFolder("ref", hit_dir)
+    
+    def hitsToCSV(self, add_text: ""):
+        self.updateFastaInfo()
+        csv_out_folder = os.path.join(self.getFolder("out"), csv)
+        self.addFolder("csv", csv_out_folder)
+        for filename, info in self._toolBelt.getHitsCSVInfo():
+            sample_name = getSampleName(filename)
+            out_file = os.path.join(csv_out_file, f"{sample_name}_{add_text}_.csv")
+            csvHandler.outputHitsCSV(header = blastTool.header, rows = info)
+    
+    def hitContigsToFasta(self, add_text: str, by_species = False):
+        if not by_species:
+            self._toolBelt.outputContigsFastaAll(out_dir = self.getFolder("out"))
+        else:
+            self._toolBelt.outputContigFastaBySpecies(out_dir = self.getFolder("out"))
+    
+    def hitAccessionsToFasta(self, email: str):
+        hit_dir = os.path.join(self.getFolder("out"), "hit_fastas")
+        self.addFolder("accs", hit_dir)
         for file in self.getFiles("csv", ".textsearch.csv"):
             filename = os.path.splitext(os.path.basename(file))[0]
             sample_name = "_".join(filename.split("_")[:-3])
@@ -146,7 +177,7 @@ class fileHandler:
     def makeTempFastas(self, raw_dir: str, 
                        sample_name: str, fasta_file: str) -> dict:
         self.addFolder("raw", raw_dir)
-        tmp_dir = os.path.join(self._dirs["ref"], "tmp")
+        tmp_dir = os.path.join(self._dirs["acc"], "tmp")
         self.addFolder("tmp", tmp_dir)
         tmp_seqs_dict = {}
         for n, raw_reads in enumerate(self.getFiles("raw", ".fasta")):
@@ -155,45 +186,37 @@ class fileHandler:
                                               "seq_to_tmp" : {}}
             self.addFastaFile(filename = fasta_file, seqs = SeqIO.parse(fasta_file, 
                           "fasta"))
-            seq_names, tmp = self.toolBelt.makeTempFasta(fasta_file, n = n,
+            seq_names, tmp = self._toolBelt.makeTempFasta(fasta_file, n = n,
                                                          tmp_dir = self.getFolder["tmp"])
             tmp_seqs_dict[sample_name]["seq_to_tmp"].update(zip(seq_names, tmp))
         return tmp_seqs_dict
     
-    def runBwaTS(self, raw_dir: str, bwa_dir: str) -> list:
-        if not os.path.exists(bwa_dir):
-            os.mkdir(bwa_dir)
-        self.addFolder("bwa", bwa_dir)
+    def runBwaTS(self, raw_dir: str) -> list:
+        self.addFolder("raw", raw_dir)
+        self.addFolder("bwa", os.path.join(self.getFolder("out"), bwa)
         tsv_files = []
         all_samples_dict = {}
-        for fasta in self.getFiles("ref", ".fasta"):
+        for fasta in self.getFiles("acc", ".fasta"):
             sample_name = "_".join(
                           os.path.splitext(
                           os.path.basename(fasta))[0]
                           .split("_")[:-1])
-            all_samples_dict.update(self.makeTempFastas(raw_dir, 
+            #This need rewriting to be clearer.
+            all_samples_dict.update(self.makeTempFastas(self.getFolder("raw"), 
                                                         sample_name, fasta))
         for sample_name, details in all_samples_dict.items():        
-            #bwa_reads = os.path.join(self._dirs["raw"], input_reads)
             bwa_reads = details["raw"]
             for i in range(len(details["tmp"])):
                 tmp_fa = details["tmp"][i]
                 seq_name = details["seq_names"][i]
-                subprocess.run(["bwa", "index", tmp_fa])
                 out_file = os.path.join(bwa_dir, 
-                                        f"{sample_name}_{seq_name}.sorted.bam"
-                bwa_proc = subprocess.Popen(["bwa", "mem", "-v", "0", "-t", 
-                                             "12", "-v", "3",
-                                             tmp_fa, bwa_reads], stdout = PIPE)
-                view_proc = subprocess.Popen(["view", "-S", "-b"], 
-                                             stdin = bwa_proc, stdout = PIPE)
-                sort_proc = subprocess.Popen(["samtools", "sort"], 
-                                             stdout = out_file)
-                #Just remove the folder.
+                                        f"{sample_name}_{seq_name}.sorted.bam"")
+                exec_utils.runBwa(tmp_fa, bwa_reads, out_file)
+                #Just remove the folder - write a remove dir function.
                 os.remove(tmp_fa)
-                self.getMappedReads(out_file, sample_name, seq_name)
+                self.coverageToTSV(out_file, sample_name, seq_name)
         #Presumably needs the .clean or whatever?
-        Cleanup([self._dirs["ref"]], [".amb", ".ann", ".bwt", ".pac", ".sa"])
+        Cleanup([self._dirs["acc"]], [".amb", ".ann", ".bwt", ".pac", ".sa"])
         return tsv_files
     
     #Some of these static methods might be better moved to their own class.
@@ -211,7 +234,7 @@ class fileHandler:
                        os.path.join(trimmed_dir, filename[:-3], 
                        R2_file))
     
-    def getMappedReads(self, bwa_file: str, 
+    def coverageToTSV(self, bwa_file: str, 
                        sample_name: str, seq_name: str) -> str:
         num_mapped_reads = bwaHandler.getNumMappedReads(bwa_file, 
                                                         sample_name, seq_name, 
@@ -222,6 +245,7 @@ class fileHandler:
         return tsv_file
         
 class csvHandler(fileHandler):
+    __slots__ = ("df_all", "header_df")
     def __init__(self, header_df: list):
         self.df_all = []
         self.header_df = header_df
@@ -261,7 +285,7 @@ class csvHandler(fileHandler):
         df_merged.to_csv(all_csv)
         return all_csv
         
-    def addTSVContents(self, file: str):
+    def appendTSVContents(self, file: str):
         tmp_df = pd.read_csv(file, sep = "\t", header = None)
         self.df_all.append(tmp_df)
     
@@ -275,12 +299,24 @@ class csvHandler(fileHandler):
         full_df.drop("Unnamed: 0", axis=1)
         test_csv_file = os.path.join(dir_name, "test_csv.csv")
         full_df.to_csv(test_csv_file, index = False)
+    
+    @staticmethod
+    def outputHitsCSV(header: list, out_file: str, rows: list):
+        with open(out_file, 'w+', encoding=UTF8, newline='') as out_csv:
+            csv_writer = csv.writer(out_csv)
+            csv_writer.writerow(header) 
+            csv_writer.writerows(rows)
+            LOG.info(f"csv written to {out_file}.")
    
-class toolBelt:
+class toolBelt(fileHandler):
+    tool_kinds = ["fasta", "blast", "pfam", "rma"]
+    __slots__ = ("tools")
     def __init__(self):
-        tool_kinds = ["fasta", "blast", "pfam", "rma"]
         self.tools = {tool : defaultdict(list) for tool in tool_kinds}
-        
+    
+    def getSampleName(self, filename: str):
+        super().getSampleName(filename)
+    
     def addFastaTool(self, filename, seqs = None, 
                      frame = 1, ID = "N/A", species = "N/A"):
         #This feels like it repeats some code. Better way maybe?
@@ -296,11 +332,6 @@ class toolBelt:
             self.tools["fasta"].update({filename : fastaTool(seqs, 
                                                              frame, contig_ ID, 
                                                              species)})
-    
-    def updateFastaTool(self, filename, seqs, 
-                         ID, species, frame = 1):
-        self.tools["fasta"][filename].append(fastaTool(seqs, 
-                                                       frame, ID, species))
         
     def addBlastTool(self, filename: str, ictv: bool):
         self.tools["blast"].update({filename : blastTool(filename, ictv)})
@@ -317,18 +348,31 @@ class toolBelt:
             "Fatal error, no such function."
         return func_to_call(*args, **kwargs)
     
-    def outputFasta(self, add_text: str, by_species = False):
-        pass
-    
+    def outputContigFastaAll(self, out_dir: str):
+        for filename, tools in self.tools["fasta"].items():
+            out_file = os.path.join(out_dir,
+                                       f"{getSampleName(filename)}_{add_text}.fasta")
+            with open(out_file, "w+") as fa:
+                for tool in tools:
+                    tool.output(fa)
+            LOG.info(f"{filename} written with all hits for contig.")
+                
+    #Note to self, write some functions to make this comprehension less Worse.            
+    def outputContigFastaBySpecies(self, out_dir: str):
+        for filename in self.tools["fasta"]:
+            for species in self.getUniqueSpecies():
+                current_tools = [tool for tool in filename 
+                                 if tool.seq == species]
+                out_file = os.path.join(out_dir, f"{species}_contigs.fasta")
+                with open(out_file, 'w+') as fa:
+                    for tool in current_tools:
+                        tool.output(fa)
+            
     def labelFasta(filename: str, frame: int, to_label: str, species: str):
         fa_tools = self.tools["fasta"][filename]
         for tool in fa_tools:
             if tool.contig_id == to_label:
-                change_tool = fa_tools.pop(tool)
-                change_seq = change_tool.seq
-        replace_seq = SeqRecord(seq = change_seq.seq, id = species)
-        self.updateFastaTool(filename, seqs = replace_seq, 
-                              frame = frame, ID = to_label, species = species)
+                change_tool.updateSpecies(species)
 
     def makeTempFasta(self, filename: str, tmp_dir: str, sample_name: str, n = 1) -> tuple:
     seqs = []
@@ -339,32 +383,57 @@ class toolBelt:
                                 f"{sample_name}_seq_{n}f{i}_tmp.fasta")
         seq_names.append(seq_name)
         tmp.append(tmp_file)
-        SeqIO.write(tool.seq, tmp_file, "fasta")
+        with open(tmp_file, "w+") as fa:
+            tool.output(fa)
     return seq_names, tmp_file
+    
+    def getHitsCSVInfo(self):
+        for filename in self.tools["blast"]:
+            yield filename, self.tools["blast"][filename].getHitCSVInfo()
+    
+    def getUniqueSpecies(self):
+        species = [tool.species for tool in self.getAllTools("fasta")]
+        return set(species)
         
+    def getAllTools(self, tool_kind: str):
+        return [tool for tool in 
+                filename for filename in self.tools["tool_kind"]]
+    
 #May or may not be needed as each tool is fairly bespoke.
 class Tool:
-    def __init__(self):
+    def __init__(self, filename):
         pass
 
 class fastaTool(Tool):
+    __slots__ = ("contig_id", "seq", "frame", "species")
     def __init__(self, seq, frame: int, ID: str, species: str):
-        self.filename = filename
         self.contig_id = ID
         if type(seq) == str:
             seq = [SeqRecord(seq = seq, 
-                              id = "Unnamed fasta", description = "")
+                             id = "Unnamed_fasta", description = "")
         self.seq = seq
         self.frame = frame
-        self.species = species
-
-    def subSeqName(self, n: int, i: int):
-        seq_name = re.sub("[ :.,()/]", "_", self.seq.description)
+        self.species = subSeqName(species)
+    
+    def updateSpecies(self):
+        self.species, self.seq.description = self.subSeqName(species)
+        
+    def subSeqName(self, to_sub: None):
+        to_sub = self.seq.description if not to_sub else to_sub
+        seq_name = re.sub("[ :.,()/]", "_", to_sub)
         return seq_name
+        
+    def output(output_stream):
+        SeqIO.write(self.seq, output_stream, "fasta")
 
 class blastTool(Tool):
-    #Put these in yaml.
-    header = {}
+    __slots__ = ("header", "_queries", "blast_type", "hits")
+    header = ("species", "query % coverage", 
+              "% identity", "contig length", 
+              "contig name", "NCBI accession",
+              "Frame", "alignment", 
+              "matched length",
+              "bitscore")
     
     def __init__(self, filename: str, ictv: bool):
         with open(filename) as handle:
@@ -372,11 +441,11 @@ class blastTool(Tool):
                              else NCBIXML.parse(handle, debug = 0))
             self.blast_type = "BlastN"
 
-    def getHitData(hit, query, ictv = False):
-        aln_info = getICTVData(hit, query) if ictv else getNCBIData(hit, query)
+    def parseHitData(hit, query, ictv = False):
+        aln_info = parseICTVData(hit, query) if ictv else parseNCBIData(hit, query)
         return {title : dict_values[i] for i, title in enumerate(self.header)}
         
-    def getICTVData(hit, query):
+    def parseICTVData(hit, query):
         hsp = hit.hsps[0]
         accession = hit.id
         species = re.sub("[ :.,()/]", "_", hit.description)
@@ -389,7 +458,7 @@ class blastTool(Tool):
                 len(hsp.query.seq), hit.query_id, 
                 accession, "N/A", str(hsp.query.seq), ungapped, hsp.bitscore)
         
-    def getNCBIData(hit, query):
+    def parseNCBIData(hit, query):
         #Assumes no frame.
         frame = "N.A"
         hsp = hit.hsps[0]
@@ -411,14 +480,15 @@ class blastTool(Tool):
                 query.query_length, query.query,
                 accession, frame[0], hsp.query, ungapped, hsp.bits)
         
-    def parseAlignments(self, search_params = None):
+    def parseAlignments(self, search_params = None, get_all = True) -> int:
         all_aln = {}
         for n, query in enumerate(self._queries):
             aln = (self._parseICTVAln(query, n) if self.ictv 
-                   else self._parseNCBIAln(query, n, search_params.get_all))
+                   else self._parseNCBIAln(query, n, get_all))
             all_aln.update(aln)
         self.hits = (checkAlignments(all_aln, search_params) if search_params 
                      else full_aln)
+        return n, len(self.hits)
             
     def _parseNCBIAln(self, query, n: int, get_all: bool):
         try:
@@ -429,7 +499,7 @@ class blastTool(Tool):
             to_check = len(query.alignments) if get_all == True else 1
             for i in range(to_check):
                 alignment = query.alignments[i]
-                aln[f"q{n}a{i+1}"] = self.getHitData(alignment, query, ictv)       
+                aln[f"q{n}a{i+1}"] = self.parseHitData(alignment, query, ictv)       
             #Catches empty xml entries and ignores them.
         except ExpatError:
             pass
@@ -439,7 +509,7 @@ class blastTool(Tool):
         aln = {}
         if len(query.hits) > 0:
             for i, hit in enumerate(query.hits):
-                aln[f"q{n}a{i}"] = self.getHitData(hit, query, ictv)
+                aln[f"q{n}a{i}"] = self.parseHitData(hit, query, ictv)
         return aln
         
     def checkAlignments(self, aln, search_params: NamedTuple):
@@ -456,10 +526,10 @@ class blastTool(Tool):
                 and aln["bitscore"] > search_params.bitscore
             ):
                 checked_aln[key] = (alignment 
-        return checked_alignments
+        return checked_aln
     
-    def unpack(self) -> list:
-        fastas = []
+    def getHitFastaInfo(self) -> list:
+        info = []
         for hit in self.hits:
             species = hit["species"]
             contig_name = hit["contig name"]
@@ -470,8 +540,12 @@ class blastTool(Tool):
             current_fasta = {"contig_id" : contig_id,
                             "Frame" : hit["Frame"],
                             "species" : species}
-            fastas.append(current_fasta)
-        return fastas 
+            info.append(current_fasta)
+        return info 
+        
+    def getHitCSVInfo(self):
+        no_hits = ["No hits found."] * len(header)
+        return self.aln.values() if self.aln else no_hits
         
 class rmaTool(Tool):
     def __init__(self):
