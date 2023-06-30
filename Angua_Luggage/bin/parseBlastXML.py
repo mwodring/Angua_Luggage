@@ -3,12 +3,12 @@
 @author: mwodring
 """
 
-import argparse
-import sys
-import os
-from utils import SearchParams
+import argparse, sys, os, logging
+from ..utils import SearchParams
 
-from ..Luggage import fileHandler
+from ..LuggageInterface import blastParser
+
+LOG = logging.getLogger(__name__)
 
 def parseArguments():
     parser = argparse.ArgumentParser(description = "Runs 'text search'.")
@@ -25,7 +25,7 @@ def parseArguments():
     parser.add_argument("-c", "--contigs",
                         help = ".fasta file containing the contigs used for the Blast query, if you'd like the reads extracted.",
                         default = False)
-parser.add_argument("-r", "--raw",
+    parser.add_argument("-r", "--raw",
                         help = "Directory of raw reads if bwa is desired. (For single-ended reads blasts.)")
     
     #SWITCHES
@@ -63,16 +63,22 @@ def getTerms(text_file: str) -> list:
         data = txt.read()
         return [term.upper() for term in data.split("\n") if term != ""]
 
-def runTextSearch(handler: fileHandler, args):
-    xmls = handler.findBlastTools(ictv = args.ictv)
-    queries_parsed, hits = handler.parseAlignments(SearchParams(args.searchterm,
+def runTextSearch(handler, args):
+    whl = getTerms(args.searchterm) if args.searchterm.endswith(".txt") else list(
+                   args.searchterm)
+    bl = getTerms(args.blacklist) if args.blacklist.endswith(".txt") else list(
+                  args.blacklist)
+    handler.findBlastTools(ictv = args.ictv)
+        
+    queries_parsed, hits = handler.parseAlignments(search_params = 
+                                                   SearchParams(whl,
                                                                 args.minlen,
                                                                 args.bitscore,
-                                                                args.blacklist),
-                                                   args.get_all)
-    handler.hitsToCSV(args.searchterm)
+                                                                bl),
+                                                   get_all = args.get_all)
+    handler.hitsToCSV(os.path.splitext(os.path.basename(args.searchterm))[0])
     handler.mergeCSVOutput()
-    return f"Total queries checked: {queries_parsed} TOtal hits found: {hits}"
+    return f"Total queries checked: {queries_parsed} Total hits found: {hits}"
 
 def getEmail():
     email = input()
@@ -81,12 +87,9 @@ def getEmail():
     
 def main():
     args = parseArguments()
-    whl = getTerms(args.searchterm) if args.whl.endswith(".txt") else list(
-                   args.searchterm)
-    bl = getTerms(args.blacklist) if args.blacklist.endswith(".txt") else list(
-                  args.blacklist)
     
-    handler = fileHandler(args.in_dir, "xml").addFolder(args.out_dir, "out")
+    handler = blastParser("xml", args.in_dir)
+    handler.addFolder("out", args.out_dir)
     
     LOG.info(runTextSearch(handler, args))
     
@@ -94,7 +97,7 @@ def main():
     if args.contigs:
         handler.addFolder("contigs", args.contigs)
         handler.findFastaTools("contigs")
-        handler.hitsToFasta()
+        handler.hitsContigsToFasta(by_species = True)
     
     if args.raw and not args.acc_to_fa:
         args.acc_to_fa == True
@@ -109,3 +112,6 @@ def main():
         handler.findFastaFiles("raw")
         tsvs = handler.runBwaTS(args.raw)
         handler.appendMappedToCSV()
+        
+if __name__ == "__main__":
+    sys.exit(main())

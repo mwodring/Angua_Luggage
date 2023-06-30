@@ -1,7 +1,9 @@
-import subprocess
-from .AnguaUtils import back_mapper
+import subprocess, os, logging
+from .back_mapper import back_mapper
 from Bio import Entrez
-import os
+from shutil import move as shmove
+
+LOG = logging.getLogger(__name__).addHandler(logging.NullHandler())
 
 def backMapToBedGraph(trimmed_dir: str, outputdir: str, ref_file: str):
     just_filename = os.path.basename(ref_file)
@@ -23,7 +25,7 @@ def backMapToBedGraph(trimmed_dir: str, outputdir: str, ref_file: str):
                     #https://blog.liang2.tw/posts/2016/01/plot-seq-depth-gviz/#convert-sequencing-depth-to-bedgraph-format
                     #os.system(f"bedtools genomecov -bg -ibam {out_dir}/{d}/{seq.name} | gzip > {outputdir}/{d}/{seqname}.bedGraph.gz")
                     gz_outfile = os.path.join(outputdir, d, f"{seqname}.bedGraph.gz")
-                    bg_outfile = os.path.join(out_dir, , d, seq.name)
+                    bg_outfile = os.path.join(out_dir, d, seq.name)
                     bg_proc = subprocess.Popen(["bedtools", "genomecov", "-bg", "ibam", bg_outfile], stdout = PIPE)
                     gz_proc = subprocess.Popen(["gzip"], stdin = bg_proc, stdout = gz_outfile)
 
@@ -56,7 +58,7 @@ def fetchSRA(output_folder: str, accession: str):
     #In future I would like to find a way for this to check the filesize of the accessions against the memory available.
     return result
 
- def getpercentage(a, b):
+def getpercentage(a, b):
     return(a / b) * 100
 
 def fetchEntrezFastas(id_list: list, email: str, outputdir: str, api = False, proxy = 3128, filename = "viruses"):

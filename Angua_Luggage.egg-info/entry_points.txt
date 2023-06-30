@@ -1,0 +1,2 @@
+[console_scripts]
+parseBlast = Angua_Luggage.bin.parseBlastXML:main

@@ -1,3 +1,7 @@
 graft Angua_Luggage/data/
-include Angua_Luggage/data/fastaTool.yaml
 include Angua_Luggage/data/orfs.r
+include Angua_Luggage/data/header.json
+include Angua_Luggage/data/logging.conf
+
+graft Angua_Luggage/bin/
+include Angua_Luggage/bin

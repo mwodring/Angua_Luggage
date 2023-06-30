@@ -1,0 +1,3 @@
+biopython
+rpy2
+pysam
