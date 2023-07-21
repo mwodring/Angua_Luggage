@@ -4,7 +4,8 @@ from .exec_utils import *
 import json, importlib.resources
 from . import data
 
-LOG = logging.getLogger(__name__).addHandler(logging.NullHandler())
+LOG = logging.getLogger(__name__)
+LOG.addHandler(logging.NullHandler())
 
 header_json = importlib.resources.open_binary(data, "header.json")
 header = json.load(header_json)
@@ -18,8 +19,6 @@ class blastParser(fileHandler):
                                               search_params = search_params,
                                               get_all = get_all)
     
-    
-    #TODO - Move this to toolBelt.
     def updateFastaInfo(self):
         self._toolBelt.mapFastaToBlast()
     
@@ -44,28 +43,36 @@ class blastParser(fileHandler):
         csv_out_folder = os.path.join(self.getFolder("out"), "csv")
         self.addFolder("csv", csv_out_folder)
         for filename, info in self._toolBelt.getHitsCSVInfo():
-            sample_name = getSampleName(filename)
-            out_file = os.path.join(csv_out_file, f"{sample_name}_{add_text}_.csv")
-            csvHandler.outputHitsCSV(header = header, rows = info)
+            if info:
+                sample_name = getSampleName(filename)
+                out_file = os.path.join(csv_out_folder, 
+                                        f"{sample_name}_{add_text}.textsearch.csv")
+                csvHandler.outputHitsCSV(header = header, 
+                                         rows = info, out_file = out_file)
+            else:
+                LOG.info(f"No suitable hits for {filename}.")
     
-    def hitContigsToFasta(self, add_text: str, by_species = False):
+    def hitContigsToFasta(self, by_species = False):
+        out_dir = os.path.join(self.getFolder("out"), "contigs")
+        self.addFolder("parsed_contigs", out_dir)
         if not by_species:
-            self._toolBelt.outputContigsFastaAll(out_dir = self.getFolder("out"))
+            self._toolBelt.outputContigsAll(out_dir = out_dir)
         else:
-            self._toolBelt.outputContigFastaBySpecies(out_dir = self.getFolder("out"))
+            self._toolBelt.outputContigBySpecies(out_dir = out_dir)
     
     def hitAccessionsToFasta(self, email: str):
         hit_dir = os.path.join(self.getFolder("out"), "hit_fastas")
         self.addFolder("accs", hit_dir)
+        #TODO: This should use the merged csv or better yet the toolBelt.
         for file in self.getFiles("csv", ".textsearch.csv"):
             filename = os.path.splitext(os.path.basename(file))[0]
             sample_name = "_".join(filename.split("_")[:-3])
-            accessions = csvHandler.getCSVAccesions(file)
+            accessions = csvHandler.getCSVAccessions(file)
             fa_filename = f"{os.path.splitext(sample_name)[0]}_accessions.fasta"
-            fetchEntrezFastas(id_list = all_accessions, 
-                                         out_dir = hit_dir, 
-                                         email = email, 
-                                         filename = fa_filename)
+            fetchEntrezFastas(id_list = accessions, 
+                                        out_dir = hit_dir, 
+                                        email = email, 
+                                        filename = fa_filename)
             self.addFastaFile(fa_filename)
         #Might be worth naming these based on the samples they come from rather 
         #than the full csv.
@@ -89,7 +96,7 @@ class blastParser(fileHandler):
     
     def runBwaTS(self, raw_dir: str) -> list:
         self.addFolder("raw", raw_dir)
-        self.addFolder("bwa", os.path.join(self.getFolder("out")), bwa)
+        self.addFolder("bwa", os.path.join(self.getFolder("out"), "bwa"))
         tsv_files = []
         all_samples_dict = {}
         for fasta in self.getFiles("acc", ".fasta"):

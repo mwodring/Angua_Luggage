@@ -7,13 +7,15 @@ Created on Fri May 19 15:51:33 2023
 
 import logging, os, re, subprocess
 import pandas as pd
-#TODO - have pandas do the csv in/out.
+#TODO: have pandas do the csv in/out.
 import csv
 from collections import defaultdict
 
 from Bio import SeqIO, SearchIO
 from Bio.SeqRecord import SeqRecord
 from Bio.Blast import NCBIXML
+import dataclasses import dataclass, field
+from collections.abc import Generator
 
 from .utils import count_calls, Cleanup, getSampleName
 from .exec_utils import *
@@ -43,7 +45,7 @@ class fileHandler:
         except KeyError:
             LOG.error("Not tracking directory of that kind.")
     
-    def getFiles(self, dir_kind: str, file_end = ""):
+    def getFiles(self, dir_kind: str, file_end = "") -> Generator[str]:
         dir_name = self.getFolder(dir_kind)
         for file in os.listdir(dir_name):
             if file.endswith(file_end):
@@ -57,7 +59,7 @@ class fileHandler:
     def addBlast(self, filename: str, ictv = False):
         self._toolBelt.addBlastTool(filename, ictv)
     
-    def findBlastTools(self, ictv = False):
+    def findBlastFiles(self, ictv = False):
         blasts = self.getFiles("xml", ".xml")
         #if not blasts:
             # TODO Raise an error here.
@@ -65,7 +67,7 @@ class fileHandler:
         for xml in blasts:
             self.addBlast(xml, ictv)
     
-    def findFastaTools(self, look_dir = "contigs"):
+    def findFastaFiles(self, look_dir = "contigs") -> Generator[str]:
         fastas = self.getFiles(look_dir, ".fasta")
         if not blasts:
             LOG.critical("No .fasta files bla bla")
@@ -91,14 +93,14 @@ class csvHandler():
     
     @staticmethod
     def getCSVAccessions(csv: str) -> pd.DataFrame:
-        df = pd.read_csv(file, sep = ",")
+        df = pd.read_csv(csv, sep = ",")
         all_accessions = df['NCBI accession'].to_list()
         return all_accessions
     
-    def appendCSVContents(self, file: str, sample = False):
-        tmp_df = pd.read_csv(file, sep = ",")
+    def appendCSVContents(self, csv: str, sample = False):
+        tmp_df = pd.read_csv(csv, sep = ",")
         if sample:
-            sample_name = getSampleName(file)
+            sample_name = getSampleName(csv, extend = 1)
             tmp_df["sample"] = sample_name
         self.df_all.append(tmp_df)
      
@@ -110,8 +112,8 @@ class csvHandler():
         df_merged.to_csv(all_csv)
         return all_csv
         
-    def appendTSVContents(self, file: str):
-        tmp_df = pd.read_csv(file, sep = "\t", header = None)
+    def appendTSVContents(self, tsv: str):
+        tmp_df = pd.read_csv(tsv, sep = "\t", header = None)
         self.df_all.append(tmp_df)
     
     #This could probably be refactored to be more multi-use and less fragile tbh.
@@ -127,14 +129,14 @@ class csvHandler():
     
     @staticmethod
     def outputHitsCSV(header, out_file: str, rows: list):
-        with open(out_file, 'w+', encoding=UTF8, newline='') as out_csv:
+        with open(out_file, 'w+', encoding='UTF8', newline='') as out_csv:
             csv_writer = csv.writer(out_csv)
             csv_writer.writerow(header) 
             csv_writer.writerows(rows)
             LOG.info(f"csv written to {out_file}.")
-   
+    
 class toolBelt():
-    tool_kinds = ["fasta", "blast", "pfam", "rma"]
+    tool_kinds = ("fasta", "blast", "pfam", "rma")
     __slots__ = ("tools")
     
     def __init__(self):
@@ -160,31 +162,34 @@ class toolBelt():
         self.tools["blast"].update({filename : blastTool(filename, ictv)})
     
     #To run a process on all tools of type in all files.
-    def process_all(self, tool_kind: str, func: str, *args, **kwargs):
+    def process_all(self, tool_kind: str, func: str, 
+                    *args, **kwargs) -> Generator[Callable]:
         for filename in self.tools[tool_kind].keys():
-            yield filename, self.process(filename, tool_kind, func, *args, **kwargs)
+            yield filename, self.process(filename, tool_kind, func, 
+                                         *args, **kwargs)
             
     #To run a process on all tools of type connected to a file.  
-    def process(self, filename: str, tool_kind: str, func: str, *args, **kwargs):
+    def process(self, filename: str, tool_kind: str, func: str, 
+                *args, **kwargs) -> Generator[Callable]:
         chosen_tools = [self.tools[tool_kind][filename]]
         for tool in chosen_tools:
             yield tool.process(func_to_call, *args, **kwargs)
     
-    def outputContigFastaAll(self, out_dir: str):
+    def outputContigAll(self, out_dir: str):
         for filename, tools in self.tools["fasta"].items():
             out_file = os.path.join(out_dir,
-                                       f"{getSampleName(filename)}_{add_text}.fasta")
+                                    f"{getSampleName(filename)}_{add_text}.fasta")
             with open(out_file, "w+") as fa:
                 for tool in tools:
                     tool.output(fa)
             LOG.info(f"{filename} written with all hits for contig.")
                 
     #Note to self, write some functions to make this comprehension less Worse.            
-    def outputContigFastaBySpecies(self, out_dir: str):
+    def outputContigBySpecies(self, out_dir: str):
         for filename in self.tools["fasta"]:
             for species in self.getUniqueSpecies():
                 current_tools = [tool for tool in filename 
-                                 if tool.seq == species]
+                                 if tool.species == species]
                 out_file = os.path.join(out_dir, f"{species}_contigs.fasta")
                 with open(out_file, 'w+') as fa:
                     for tool in current_tools:
@@ -192,8 +197,8 @@ class toolBelt():
     
     def mapFastaToBlast(self):
         for filename, tool in self.tools["blast"].items():
-            info = tool.getHitFastaInfo()
-            for fa in info:
+            all_info = tool.getHitFastaInfo()
+            for info in all_info:
                 self.labelFasta(filename,
                                 frame = info["Frame"],
                                 to_label = info["contig_id"],
@@ -205,9 +210,9 @@ class toolBelt():
             if tool.contig_id == to_label:
                 change_tool.updateSpecies(species)
     
-    def makeTempFasta(self, filename: str, tmp_dir: str, sample_name: str, n = 1) -> tuple:
-        seqs = []
-        tmp_fa = []
+    def makeTempFasta(self, filename: str, tmp_dir: str, 
+                      sample_name: str, n = 1) -> tuple:
+        seqs, tmp_fa = [], []
         for i, tool in enumerate(self.tools["fasta"][filename]):
             seq_name = tool.subSeqName(n, i, sample_name)
             tmp_file = os.path.join(tmp_dir, 
@@ -218,33 +223,33 @@ class toolBelt():
                 tool.output(fa)
         return seq_names, tmp_file
     
-    def getHitsCSVInfo(self):
-        for filename in self.tools["blast"]:
-            yield self.tools["blast"][filename].getHitCSVInfo()
+    def getHitsCSVInfo(self) -> Generator[str, list]:
+        for filename, tool in self.tools["blast"].items():
+            yield filename, tool.getHitCSVInfo()
     
-    def getUniqueSpecies(self):
+    def getUniqueSpecies(self) -> set:
         species = [tool.species for tool in self.getAllTools("fasta")]
         return set(species)
     
-    #Get all tools of a type connected to ALL filenames.
-    def getAllTools(self, tool_kind: str):
-        return [tool for tool in self.tools[tool_kind].values()]
-
+    #TODO: CHeck where yield from and generator returns are more appropriate.
+    def getAllTools(self, tool_kind: str) -> Generator[Tool]:
+        if tool_kind == "fasta":
+            return (tool for filename in self.tools["fasta"].values() for tool in filename)
+        else:
+            return (tool for tool in self.tools[tool_kind].values())
+    
     def parseAlignments(self, header, search_params = None, get_all = False):
         all_queries_parsed, all_hits = 0, 0
         for tool in self.getAllTools("blast"):
             queries_parsed, hits = tool.parseAlignments(header, 
                                                         search_params, get_all)
-            if hits <= 0:
-                removed = self.tools["blast"].pop(tool.filename)
             all_queries_parsed += queries_parsed
             all_hits += hits
         return all_queries_parsed, all_hits
         
-#May or may not be needed as each tool is fairly bespoke.
+@dataclass
 class Tool:
-    def __init__(self, filename):
-        self.filename = filename
+    filename: str
     
     def process(self, func: str, *args, **kwargs):
         try:
@@ -253,18 +258,21 @@ class Tool:
             LOG.error("No such function.")
         return func_to_call(*args, *kwargs)
 
+@dataclass
 class fastaTool(Tool):
-    __slots__ = ("contig_id", "seq", "frame", "species")
-    def __init__(self, seq, frame: int, ID: str, species: str):
-        super().__init__(filename)
-        self.contig_id = ID
-        if type(seq) == str:
-            seq = [SeqRecord(seq = seq, id = "Unnamed_fasta", description = "")]
-        self.seq = seq
-        self.frame = frame
-        self.species = subSeqName(species)
+    seq: str | SeqRecord
+    frame: int
+    contig_id: str
+    species: str
     
-    def updateSpecies(self):
+    def __post_init__(self):
+        if type(self.seq) == str:
+            seq = [SeqRecord(seq = self.seq, 
+                   id = "Unnamed_fasta", description = "")]
+        self.seq = seq
+        self.species = self.subSeqName(self.species)
+    
+    def updateSpecies(self, species):
         self.species, self.seq.description = self.subSeqName(species)
         
     def subSeqName(self, to_sub: None):
@@ -275,24 +283,24 @@ class fastaTool(Tool):
     def output(output_stream):
         SeqIO.write(self.seq, output_stream, "fasta")
 
+@dataclass
 class blastTool(Tool):
-    __slots__ = ("_queries", "blast_type", "hits", "filename")
+    ictv: bool
+    blast_type: str = "Blastn"
+    _queries: Generator = field(init = False)
               
-    def __init__(self, filename: str, ictv = False):
-        super().__init__(filename)
-        # TODO - BiopythonDeprecationWarning etc
-        self._queries = (SearchIO.parse(filename, "blast-xml") if ictv 
+    def __post_init__(self):
+        self._queries = (SearchIO.parse(self.filename, "blast-xml") if ictv 
                          else NCBIXML.parse(handle, debug = 0))
-        self.blast_type = "BlastN"
-        self.ictv = ictv
-        self.filename = filename
-
-    def parseHitData(self, hit, query, header):
-        aln_info = self.parseICTVData(hit, query) if self.ictv else self.parseNCBIData(hit, query)
+    
+    #Need to consult documentation to type hint this stuff.
+    def parseHitData(self, hit, query, header: list) -> dict:
+        aln_info = self.parseICTVData(hit, query) if self.ictv 
+                   else self.parseNCBIData(hit, query)
         return {title : aln_info[i] for i, title in enumerate(header)}
         
     @staticmethod
-    def parseICTVData(hit, query):
+    def parseICTVData(hit, query) -> tuple:
         hsp = hit.hsps[0]
         accession = hit.id
         species = re.sub("[ :.,()/]", "_", hit.description)
@@ -306,7 +314,7 @@ class blastTool(Tool):
                 accession, "N/A", str(hsp.query.seq), ungapped, hsp.bitscore)
     
     @staticmethod    
-    def parseNCBIData(hit, query):
+    def parseNCBIData(hit, query) -> tuple:
         #Assumes no frame.
         frame = "N.A"
         hsp = hit.hsps[0]
@@ -329,7 +337,8 @@ class blastTool(Tool):
                 accession, frame[0], hsp.query, ungapped, hsp.bits)
         
         #Current implementation of the header feels dorky.
-    def parseAlignments(self, header, search_params = None, get_all = True):
+    def parseAlignments(self, header: list, 
+                        search_params = None, get_all = True) -> tuple:
         all_aln = {}
         for n, query in enumerate(self._queries):
             aln = (self._parseICTVAln(query, n, header) if self.ictv 
@@ -339,7 +348,7 @@ class blastTool(Tool):
                      else all_aln)
         return n, len(self.hits)
             
-    def _parseNCBIAln(self, query, n: int, get_all: bool, header):
+    def _parseNCBIAln(self, query, n: int, get_all: bool, header: list) -> dict:
         try:
             #Fetches the application type if it doesn't already know.
             if self.blast_type == "None":
@@ -362,7 +371,8 @@ class blastTool(Tool):
                 aln[f"q{n}a{i}"] = self.parseHitData(hit, query, header)
         return aln
         
-    def checkAlignments(self, all_aln, search_params):
+        #Need to check type of argparse options.
+    def checkAlignments(self, all_aln: dict, search_params) -> dict:
         if not all_aln:
             return {}
         checked_aln = {}
@@ -381,9 +391,7 @@ class blastTool(Tool):
         
     def getHitFastaInfo(self) -> list:
         info = []
-        for hit in self.hits:
-            print(hit)
-            quit()
+        for hit in self.hits.values():
             species = hit["species"]
             contig_name = hit["contig name"]
             if contig_name == "":
@@ -396,10 +404,10 @@ class blastTool(Tool):
             info.append(current_fasta)
         return info 
         
-    def getHitCSVInfo(self):
-        no_hits = ["No hits found."] * len(header)
-        return self.aln.values() if self.aln else no_hits
-        
+    def getHitCSVInfo(self) -> list:
+        #This causes the string to go across the whole .csv but it's so funny.
+        return [hit.values() for hit in self.hits.values()] if self.hits else None
+
+@dataclass
 class rmaTool(Tool):
-    def __init__(self):
-        pass
+    pass

@@ -3,11 +3,16 @@
 @author: mwodring
 """
 
-import argparse, sys, os, logging
+import argparse, sys, os, logging, logging.config
 from ..utils import SearchParams
 
 from ..LuggageInterface import blastParser
 
+from pkg_resources import resource_filename
+
+#logging_conf = resource_filename("Angua_Luggage", "data/logging.conf")
+#logging.config.fileConfig(logging_conf)
+logging.basicConfig(stream = sys.stdout)
 LOG = logging.getLogger(__name__)
 
 def parseArguments():
@@ -68,7 +73,7 @@ def runTextSearch(handler, args):
                    args.searchterm)
     bl = getTerms(args.blacklist) if args.blacklist.endswith(".txt") else list(
                   args.blacklist)
-    handler.findBlastTools(ictv = args.ictv)
+    handler.findBlastFiles(ictv = args.ictv)
         
     queries_parsed, hits = handler.parseAlignments(search_params = 
                                                    SearchParams(whl,
@@ -96,8 +101,8 @@ def main():
     #I could make this a function but for now meh.
     if args.contigs:
         handler.addFolder("contigs", args.contigs)
-        handler.findFastaTools("contigs")
-        handler.hitsContigsToFasta(by_species = True)
+        handler.findFastaFiles("contigs")
+        handler.hitContigsToFasta(by_species = True)
     
     if args.raw and not args.acc_to_fa:
         args.acc_to_fa == True

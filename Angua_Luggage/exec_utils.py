@@ -2,8 +2,11 @@ import subprocess, os, logging
 from .back_mapper import back_mapper
 from Bio import Entrez
 from shutil import move as shmove
+#TODO: Move the generation to fasta tool / fileHandler.
+from Bio import SeqIO
 
-LOG = logging.getLogger(__name__).addHandler(logging.NullHandler())
+LOG = logging.getLogger(__name__)
+LOG.addHandler(logging.NullHandler())
 
 def backMapToBedGraph(trimmed_dir: str, outputdir: str, ref_file: str):
     just_filename = os.path.basename(ref_file)
@@ -23,7 +26,6 @@ def backMapToBedGraph(trimmed_dir: str, outputdir: str, ref_file: str):
                 if seq.name.endswith("_sort.bam"):
                     seqname = os.path.splitext(seq.name)[0]
                     #https://blog.liang2.tw/posts/2016/01/plot-seq-depth-gviz/#convert-sequencing-depth-to-bedgraph-format
-                    #os.system(f"bedtools genomecov -bg -ibam {out_dir}/{d}/{seq.name} | gzip > {outputdir}/{d}/{seqname}.bedGraph.gz")
                     gz_outfile = os.path.join(outputdir, d, f"{seqname}.bedGraph.gz")
                     bg_outfile = os.path.join(out_dir, d, seq.name)
                     bg_proc = subprocess.Popen(["bedtools", "genomecov", "-bg", "ibam", bg_outfile], stdout = PIPE)
@@ -43,8 +45,7 @@ def splitBbduk(trimmed_dir):
                    R2_file))
 
 def fetchSRA(output_folder: str, accession: str):
-    #Trying to move away from FastaKit logging to getting Angua to do it but unsure how to do that here.
-    #self._logger.info(f"Fetching {accession}")
+    LOG.info(f"Fetching {accession}")
     #.strip is added due to trailing newlines.
     #https://blog.dalibo.com/2022/09/12/monitoring-python-subprocesses.html
     cmd = ["fasterq-dump", "-p", "-S", "-O", output_folder, accession.strip()]
@@ -61,10 +62,11 @@ def fetchSRA(output_folder: str, accession: str):
 def getpercentage(a, b):
     return(a / b) * 100
 
-def fetchEntrezFastas(id_list: list, email: str, outputdir: str, api = False, proxy = 3128, filename = "viruses"):
+#TODO: Shift the file io back where it belongs.
+def fetchEntrezFastas(id_list: list, email: str, out_dir: str, api = False, proxy = 3128, filename = "viruses"):
     #To help with FERA proxy shenanigans.
     os.environ["https_proxy"] = f"http://webcache:{proxy}"
-    fasta_file = os.path.join(outputdir, filename)
+    fasta_file = os.path.join(out_dir, filename)
     Entrez.email = email
     if api:
         api_key = api
@@ -72,10 +74,10 @@ def fetchEntrezFastas(id_list: list, email: str, outputdir: str, api = False, pr
                            id = set(id_list), 
                            rettype = "fasta")
     sequences = SeqIO.parse(handle, "fasta")
-    with open(fasta_file, "w") as fasta_file:
+    with open(fasta_file, "w") as fa:
         #SeqIO returns the count when it works, which is handy.
-        count = SeqIO.write(sequences, fasta_file, "fasta")
-    logger.info(f"{count} sequences found and written for {os.path.basename(fasta_file)}.")
+        count = SeqIO.write(sequences, fa, "fasta")
+    LOG.info(f"{count} sequences found and written for {os.path.basename(fasta_file)}.")
 
 def getNumMappedReads(bwa_file: str, sample_name: str, seq_name: str, bwa_folder: str) -> str:
     num_mapped_reads = subprocess.Popen(["samtools", "view", "-F", "0x04", "-c", f"{bwa_folder}/{bwa_file}"], stdout = subprocess.PIPE).communicate()[0]
