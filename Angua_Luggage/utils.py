@@ -26,3 +26,6 @@ def getSampleName(file: str, extend = None):
     if extend:
         sample = "".join(sample.split("_")[:-extend])
     return sample
+    
+def count_calls():
+    pass

@@ -1,3 +1,10 @@
 [build-system]
 requires = ["setuptools", "setuptools-scm"]
 build-backend = "setuptools.build_meta"
+
+[project]
+name = "Angua_Luggage"
+version = "0.0.30"
+
+[tool.pytest.ini_options]
+testpaths = ["test"]

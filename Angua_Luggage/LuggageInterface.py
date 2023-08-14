@@ -12,7 +12,6 @@ header = json.load(header_json)
 
 #Could probably split off the parsing and csv functions?
 class blastParser(fileHandler):
-    
     def parseAlignments(self, search_params = None, 
                         header = header, get_all = False):
         return self._toolBelt.parseAlignments(header = header,
@@ -163,4 +162,34 @@ class SRA(fileHandler):
             sample_num += 1
             #Returns the sample number for logging purposes if so desired.
         return sample_num
+
+class pfam(fileHandler):
+    def generateorfTools(self):
+        self._toolBelt.setupPfam(self.getFolder("contigs"), self.getFolder("aa"), self.getFolder("ORF_nt"))
+    
+    def setupPfam(self, out_dir: str, contig_dir = None):
+        self.addFolder("ORFs", out_dir)
+        if contig_dir:
+            self.addFolder("contigs", contig_dir)
+        self.extendFolder("ORFs", "aa", "aa")
+        self.extendFolder("ORFs", "ORF_nt", "nt")
+        self.generateorfTools()
+            
+    def runPfam(self, db_dir: str, add_text = "_virus"):
+        for file in self.getFiles("aa", ".fasta"):
+            fasta_filename = os.path.basename(file)
+            sample_name = "_".join(fasta_filename.split("_")[:-3])
+            pfam_dir = self.extendFolder("ORFs", "pfam", "pfam_json")
+            outfile = os.path.join(pfam_dir, f"{sample_name}{add_text}.json")
+            self._toolBelt.runPfam(self.getFolder("contigs"), db_dir, file, outfile)
+    
+    def getAnnotations(self, plot = True, gff3 = True, trimmed_dir = ""):
+        self._toolBelt.getAnnotations(self.getFolder("contigs"), self.getFolder("pfam"), gff3)
+        if plot:
+            self.addFolder("trimmed", trimmed_dir)
+            backmap_dir = self.extendFolder("contigs", "backmap", "backmap")
+            self.backMap()
+            Cleanup([self._getFolder("contigs")], [".64", ".pac", ".fai", ".ann", ".amb", ".0123"])
+            plot_dir = self.extendFolder("pfam", "plots", "ORF_plots")
+            self._toolBelt.plotAnnotations(self.getFolder("contigs"), plot_dir, backmap_dir)
     

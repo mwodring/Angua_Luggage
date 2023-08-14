@@ -1,5 +1,5 @@
 graft Angua_Luggage/data/
-include Angua_Luggage/data/orfs.r
+include Angua_Luggage/data/annotatr_cli.r
 include Angua_Luggage/data/header.json
 include Angua_Luggage/data/logging.conf
 

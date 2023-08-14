@@ -94,3 +94,7 @@ def runBwa(fa, bwa_reads, out_file):
                                  stdin = bwa_proc, stdout = PIPE)
     sort_proc = subprocess.Popen(["samtools", "sort"], 
                                  stdout = out_file) 
+                                 
+def runPfam(fasta_file, outfile, db_dir):
+    with open(outfile, "w") as output:
+        subprocess.run(["pfam_scan.pl", "-fasta", fasta_file, "-dir", db_dir, "-json", "pretty"], stdout = output)

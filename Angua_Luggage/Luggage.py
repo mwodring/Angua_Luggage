@@ -14,11 +14,16 @@ from collections import defaultdict
 from Bio import SeqIO, SearchIO
 from Bio.SeqRecord import SeqRecord
 from Bio.Blast import NCBIXML
-import dataclasses import dataclass, field
+import dataclasses 
+from dataclasses import dataclass, field
 from collections.abc import Generator
 
 from .utils import count_calls, Cleanup, getSampleName
 from .exec_utils import *
+
+import importlib.resources
+from . import data
+from rpy2 import robjects as r
 
 LOG = logging.getLogger(__name__)
 LOG.addHandler(logging.NullHandler())
@@ -38,12 +43,19 @@ class fileHandler:
         if not os.path.exists(add_dir):
             os.mkdir(add_dir)
         self._dirs[dir_kind] = add_dir
+        return self._dirs[dir_kind]
     
+    def extendFolder(self, dir_kind: str, new_dir_kind: str, extension: str):
+        old_dir = self.getFolder(dir_kind)
+        new_dir = os.path.join(old_dir, extension)
+        return self.addFolder(new_dir_kind, new_dir)
+        
     def getFolder(self, dir_kind: str):
         try:
             return self._dirs[dir_kind]
         except KeyError:
-            LOG.error("Not tracking directory of that kind.")
+            LOG.error(f"Not tracking directory of kind: {dir_kind}.")
+            return
     
     def getFiles(self, dir_kind: str, file_end = "") -> Generator[str]:
         dir_name = self.getFolder(dir_kind)
@@ -74,7 +86,15 @@ class fileHandler:
         for fasta in fastas:
             self.addFastaFile(fasta)
             yield fasta
-        
+    
+    def backMap(self):
+        for fasta in self.getFiles(self.getFolder("contigs"), "fasta"):
+            fasta_name = os.path.splitext(os.path.basename(fasta))[0]
+            backMapToBedGraph(self.getFolder("trimmed"), 
+                              os.path.join(self.getFolder("backmap"), 
+                                          fasta_name), 
+                             fasta)
+                             
 class csvHandler():
     __slots__ = ("df_all", "header_df")
     def __init__(self, header_df: list):
@@ -136,7 +156,7 @@ class csvHandler():
             LOG.info(f"csv written to {out_file}.")
     
 class toolBelt():
-    tool_kinds = ("fasta", "blast", "pfam", "rma")
+    tool_kinds = ("fasta", "blast", "orf", "rma", "pfam")
     __slots__ = ("tools")
     
     def __init__(self):
@@ -161,16 +181,29 @@ class toolBelt():
     def addBlastTool(self, filename: str, ictv: bool):
         self.tools["blast"].update({filename : blastTool(filename, ictv)})
     
+    def addorfTool(self, contig_dir: str):
+        new_tool = orfTool(contig_dir)
+        self.tools["orf"][contig_dir] = new_tool
+        return new_tool
+    
+    def addpfamTool(self, filename: str, outfile: str):
+        new_tool = pfamTool(filename, outfile)
+        self.tools["pfam"].update({filename : new_tool})
+        return new_tool
+    
+    def getTool(self, tool_kind: str, filename: str):
+        return self.tools[toolkind][filename]
+        
     #To run a process on all tools of type in all files.
     def process_all(self, tool_kind: str, func: str, 
-                    *args, **kwargs) -> Generator[Callable]:
+                    *args, **kwargs) -> Generator[callable]:
         for filename in self.tools[tool_kind].keys():
             yield filename, self.process(filename, tool_kind, func, 
                                          *args, **kwargs)
             
     #To run a process on all tools of type connected to a file.  
     def process(self, filename: str, tool_kind: str, func: str, 
-                *args, **kwargs) -> Generator[Callable]:
+                *args, **kwargs) -> Generator[callable]:
         chosen_tools = [self.tools[tool_kind][filename]]
         for tool in chosen_tools:
             yield tool.process(func_to_call, *args, **kwargs)
@@ -232,7 +265,7 @@ class toolBelt():
         return set(species)
     
     #TODO: CHeck where yield from and generator returns are more appropriate.
-    def getAllTools(self, tool_kind: str) -> Generator[Tool]:
+    def getAllTools(self, tool_kind: str):
         if tool_kind == "fasta":
             return (tool for filename in self.tools["fasta"].values() for tool in filename)
         else:
@@ -246,7 +279,24 @@ class toolBelt():
             all_queries_parsed += queries_parsed
             all_hits += hits
         return all_queries_parsed, all_hits
-        
+    
+    def setupPfam(self, contig_dir: str, aa_dir: str, nt_dir: str):
+        this_orfTool = self.addorfTool(contig_dir)
+        this_orfTool.getORFs(aa_dir, nt_dir)
+    
+    def runPfam(self, contig_dir: str, db_dir: str, fasta_file: str, outfile: str):
+        this_pfamTool = self.addpfamTool(fasta_file, outfile)
+        this_pfamTool.runPfam(db_dir)
+    
+    def getAnnotations(self, contig_dir: str, pfam_dir: str, gff3 = True):
+        r_params = self.tools["orf"][contig_dir].rObjs
+        pfam, df = pfamTool.parseJson(pfam_dir, r_params, gff3)
+        r_params.add_post_pfam(pfam, df)
+        self.tools["annot"] = annotTool(r_params)
+    
+    def plotAnnotations(self, plot_img_dir: str, backmap_dir: str):
+        self.tools["annot"].plotAnnotations(contig_dir, plot_img_dir, backmap_dir)
+
 @dataclass
 class Tool:
     filename: str
@@ -295,8 +345,7 @@ class blastTool(Tool):
     
     #Need to consult documentation to type hint this stuff.
     def parseHitData(self, hit, query, header: list) -> dict:
-        aln_info = self.parseICTVData(hit, query) if self.ictv 
-                   else self.parseNCBIData(hit, query)
+        aln_info = self.parseICTVData(hit, query) if self.ictv else self.parseNCBIData(hit, query)
         return {title : aln_info[i] for i, title in enumerate(header)}
         
     @staticmethod
@@ -411,3 +460,57 @@ class blastTool(Tool):
 @dataclass
 class rmaTool(Tool):
     pass
+    
+@dataclass
+class rObjs:
+    ORFs: r.robject.RObject 
+    grl:  r.robject.RObject
+    fastas:  r.robject.RObject
+    
+    def add_post_pfam(self, pfam, df):
+        self.pfam_grl = pfam
+        self.pfam_df = df
+        
+class orfTool():
+    def __init__(self, contig_dir: str):
+        self.contig_dir = contig_dir
+    
+    def getORFs(self, aa_dir: str, nt_dir: str):
+        r_path = importlib.resources.path(data, "annotatr_cli.r")
+        r_script = os.path.abspath(r_path)
+        r.r.source(r_script)
+        ORF_output = r.r['ORF_from_fasta'](self.contig_dir, aa_dir, nt_dir, 150)
+        self.rObjs = rObjs(ORF_output.rx2("ORFs"), 
+                     ORF_output.rx2("grl"),
+                     ORF_output.rx2("files"))
+
+@dataclass
+class pfamTool(Tool):
+    outfile: str
+       
+    def runPfam(self, db_dir: str):
+        runPfam(self.filename, self.outfile, db_dir)
+
+    def pfam_to_gff3(self):
+        print(self.pfam_df)
+    
+    @staticmethod
+    def parseJson(pfam_dir: str, r_params, gff3 = True):
+        ORFs = r_params.ORFs
+        grl = r_params.grl
+        pfam_output = r.r['parse_pfam_json'](pfam_dir, ORFs)
+        if gff3:
+            pfamTool.pfam_to_gff3()
+        return pfam_output.rx2("pfam"), pfam_output.rx2("df")
+
+@dataclass
+class annotTool():
+    r_params: rObjs
+    
+    def __post_init__(self):
+        self.grl = self.r_params.grl
+        self.fastas = self.r_params.fastas
+        self.pfam_df = self.r_params.pfam_df
+        
+    def plotAnnotations(self, contig_dir: str, plot_img_dir: str, backmap_dir: str):
+        r.r['generate_orf_plots'](self.grl, contig_dir, self.fastas, plot_img_dir, self.pfam_grl, self.pfam_df, backmap_dir)
