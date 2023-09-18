@@ -12,7 +12,7 @@ from pkg_resources import resource_filename
 
 #logging_conf = resource_filename("Angua_Luggage", "data/logging.conf")
 #logging.config.fileConfig(logging_conf)
-logging.basicConfig(stream = sys.stdout)
+logging.basicConfig(stream = sys.stdout, level=logging.DEBUG)
 LOG = logging.getLogger(__name__)
 
 def parseArguments():
@@ -41,8 +41,11 @@ def parseArguments():
                         help = "ICTV db?",
                         action = "store_true")
     parser.add_argument("-atf", "--acc_to_fa",
-                        help = "Output NCBI matches as fastas (for bwa).",
+                        help = "Output NCBI matches as fastas (for bwa etc.).",
                         action = "store_true")
+    parser.add_argument("-bt", "--blast_type",
+                        help = "Type of blast used. N, P or X.",
+                        default = "N")
                         
     #SEARCH_PARAMS
     search_params = parser.add_argument_group("search_params")
@@ -61,6 +64,9 @@ def parseArguments():
                         
     parser.add_argument("-e", "--email",
                         help = "Entrez email for NCBI fetching. Required if using NCBI to get accessions.")
+    parser.add_argument("-ex", "--extend",
+                        help = "Number of underscores to remove from sample names.",
+                        type = int, default = 1)
     return parser.parse_args()
 
 def getTerms(text_file: str) -> list:
@@ -73,7 +79,7 @@ def runTextSearch(handler, args):
                    args.searchterm)
     bl = getTerms(args.blacklist) if args.blacklist.endswith(".txt") else list(
                   args.blacklist)
-    handler.findBlastFiles(ictv = args.ictv)
+    handler.findBlastFiles(ictv = args.ictv, blast_type = args.blast_type)
         
     queries_parsed, hits = handler.parseAlignments(search_params = 
                                                    SearchParams(whl,
@@ -81,9 +87,12 @@ def runTextSearch(handler, args):
                                                                 args.bitscore,
                                                                 bl),
                                                    get_all = args.get_all)
-    handler.hitsToCSV(os.path.splitext(os.path.basename(args.searchterm))[0])
-    handler.mergeCSVOutput()
-    return f"Total queries checked: {queries_parsed} Total hits found: {hits}"
+    if hits > 0:
+        handler.hitsToCSV(os.path.splitext(
+                          os.path.basename(
+                          args.searchterm))[0])
+        handler.mergeCSVOutput()
+    return queries_parsed, hits
 
 def getEmail():
     email = input()
@@ -93,13 +102,15 @@ def getEmail():
 def main():
     args = parseArguments()
     
-    handler = blastParser("xml", args.in_dir)
+    handler = blastParser("xml", args.in_dir, extend = args.extend)
     handler.addFolder("out", args.out_dir)
     
-    LOG.info(runTextSearch(handler, args))
+    queries, hits = runTextSearch(handler, args)
+    LOG.info(f"Found {queries} queries with {hits} hits.")
     
     #I could make this a function but for now meh.
-    if args.contigs:
+    if args.contigs and hits > 0:
+        LOG.info("Getting contigs with hits...")
         handler.addFolder("contigs", args.contigs)
         handler.findFastaFiles("contigs")
         handler.hitContigsToFasta(by_species = True)
@@ -107,15 +118,16 @@ def main():
     if args.raw and not args.acc_to_fa:
         args.acc_to_fa == True
     
-    if args.acc_to_fa:
+    if args.acc_to_fa and hits > 0:
         while not args.email:
             print("Need an NCBI email for accessions:")
             args.email = getEmail()
-        handler.hitAccessionsToFasta(args.email)
+        LOG.info("Fetching NCBI accessions...")
+        handler.hitAccessionsToFasta(args.email, args.blast_type)
     
-    if args.raw:
-        handler.findFastaFiles("raw")
-        tsvs = handler.runBwaTS(args.raw)
+    if args.raw and hits > 0:
+        LOG.info("Mapping reads to hits...")
+        tsvs = handler.runBwaTS(args.raw, "acc", 1)
         handler.appendMappedToCSV()
         
 if __name__ == "__main__":

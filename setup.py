@@ -29,6 +29,7 @@ setup(
                 "Programming Language :: Python :: 3"],
         entry_points={"console_scripts": [
         "parseBlast = Angua_Luggage.bin.parseBlastXML:main",
-        "annotatr = Angua_Luggage.bin.getORFs:main"]
+        "annotatr = Angua_Luggage.bin.getORFs:main",
+        "spadesTidy = Angua_Luggage.bin.spadesTidy:main"]
         }
 )

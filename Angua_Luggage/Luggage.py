@@ -18,21 +18,31 @@ import dataclasses
 from dataclasses import dataclass, field
 from collections.abc import Generator
 
-from .utils import count_calls, Cleanup, getSampleName
+from .utils import Cleanup, getSampleName, getpercentage, subSeqName
 from .exec_utils import *
+
+from xml.parsers.expat import ExpatError
+from xml.etree.ElementTree import ParseError
 
 import importlib.resources
 from . import data
+
 from rpy2 import robjects as r
+from rpy2.rinterface_lib.callbacks import logger as rpy2_logger
+import logging
+rpy2_logger.setLevel(logging.ERROR)
 
 LOG = logging.getLogger(__name__)
 LOG.addHandler(logging.NullHandler())
 
 class fileHandler:
-    def __init__(self, dir_kind: str, init_dir: str):
+    def __init__(self, dir_kind: str, init_dir: str, extend = 0):
         self._resetFolders()
         self.addFolder(dir_kind, init_dir)
         self._toolBelt = toolBelt()
+        #Extend is the number of _ extensions. Defaults to 0 but can be used
+        #to start annotatr halfway through the Angua pipeline or after it etc.
+        self.extend = extend
     
     #Set folders to an empty dict.
     def _resetFolders(self):
@@ -49,7 +59,13 @@ class fileHandler:
         old_dir = self.getFolder(dir_kind)
         new_dir = os.path.join(old_dir, extension)
         return self.addFolder(new_dir_kind, new_dir)
-        
+	
+    def extendFolderMultiple(self, orig_dir_kind: str, 
+								   dir_kinds: list, dir_names: list):
+		#Zip?
+        for dir_kind, dir_name in zip(dir_kinds, dir_names):
+            self.extendFolder(orig_dir_kind, dir_kind, dir_name)
+    
     def getFolder(self, dir_kind: str):
         try:
             return self._dirs[dir_kind]
@@ -59,41 +75,41 @@ class fileHandler:
     
     def getFiles(self, dir_kind: str, file_end = "") -> Generator[str]:
         dir_name = self.getFolder(dir_kind)
-        for file in os.listdir(dir_name):
-            if file.endswith(file_end):
-                yield(os.path.join(dir_name, file))
+        if type(file_end) == list:
+            for end in file_end:
+                for file in os.listdir(dir_name):
+                    if file.endswith(end):
+                        yield(os.path.join(dir_name, file))
+        else:
+            for file in os.listdir(dir_name):
+                if file.endswith(file_end):
+                    yield(os.path.join(dir_name, file))
                 
     def addFastaFile(self, filename: str, frame = 1, 
                      ID = "N/A", species = "N/A"):
-        self._toolBelt.addFastaTool(filename, frame, ID, species)
+        self._toolBelt.addFastaTool(filename = filename,
+                                    frame = frame,
+                                    ID = ID, 
+                                    species = species)
     
     #Simple but it's a function in case it later wants validation.
-    def addBlast(self, filename: str, ictv = False):
-        self._toolBelt.addBlastTool(filename, ictv)
+    def addBlast(self, filename: str, ictv = False, blast_type = "Blastn"):
+        self._toolBelt.addBlastTool(filename, blast_type, ictv)
     
-    def findBlastFiles(self, ictv = False):
+    def findBlastFiles(self, ictv = False, blast_type = "Blastn"):
         blasts = self.getFiles("xml", ".xml")
-        #if not blasts:
-            # TODO Raise an error here.
-         #   LOG.critical("No .xml files in input folder.")
+        num = 0
         for xml in blasts:
-            self.addBlast(xml, ictv)
+            num += 1
+            self.addBlast(xml, blast_type, ictv)
+        LOG.info(f"Found {num} xml files.")
     
     def findFastaFiles(self, look_dir = "contigs") -> Generator[str]:
-        fastas = self.getFiles(look_dir, ".fasta")
-        if not blasts:
-            LOG.critical("No .fasta files bla bla")
+        fastas = self.getFiles(look_dir, [".fasta", ".fq"])
+        if not fastas:
+            LOG.critical("No .fasta files in folder!")
         for fasta in fastas:
             self.addFastaFile(fasta)
-            yield fasta
-    
-    def backMap(self):
-        for fasta in self.getFiles(self.getFolder("contigs"), "fasta"):
-            fasta_name = os.path.splitext(os.path.basename(fasta))[0]
-            backMapToBedGraph(self.getFolder("trimmed"), 
-                              os.path.join(self.getFolder("backmap"), 
-                                          fasta_name), 
-                             fasta)
                              
 class csvHandler():
     __slots__ = ("df_all", "header_df")
@@ -102,14 +118,14 @@ class csvHandler():
         self.header_df = header_df
     
     @staticmethod
-    def mappedReadsTSV(tsv_file: str, sample_name: str) -> None:
+    def mappedReadsTSV(tsv_file: str, sample_name: str,
+                       species: str, num_mapped_reads: int) -> None:
         with open(tsv_file, "w+", newline='') as tsv:
             csv_writer = csv.writer(tsv, delimiter = "\t", 
                                     lineterminator = "\n")
             trunc_sample_name = sample_name.split(".")[0]
-            species_name = "_".join(seq_name.split("_")[2:])
             csv_writer.writerow([trunc_sample_name, 
-                                 species_name, num_mapped_reads])
+                                 species, num_mapped_reads])
     
     @staticmethod
     def getCSVAccessions(csv: str) -> pd.DataFrame:
@@ -129,7 +145,7 @@ class csvHandler():
         self.header_df.append("sample")
         df_merged.columns = self.header_df
         all_csv = os.path.join(dir_name, "all_samples.csv")
-        df_merged.to_csv(all_csv)
+        df_merged.to_csv(all_csv, index = False)
         return all_csv
         
     def appendTSVContents(self, tsv: str):
@@ -143,7 +159,6 @@ class csvHandler():
         merged_df = pd.read_csv(csv_file, sep = ",")
         self.header_df = list(merged_df.columns).append("read_no")
         full_df = all_mapped_df.merge(merged_df, how = "outer")
-        full_df.drop("Unnamed: 0", axis=1)
         test_csv_file = os.path.join(dir_name, "test_csv.csv")
         full_df.to_csv(test_csv_file, index = False)
     
@@ -168,22 +183,28 @@ class toolBelt():
         if not seqs:
             seqs = SeqIO.parse(filename, "fasta")
             for seq in seqs:
-                contig_ID = seq.ID
-                self.tools["fasta"][filename].append(fastaTool(seq, 
-                                                     frame, contig_ID, species))
-                return
+                self.tools["fasta"][filename].append(fastaTool(
+                                                     filename = filename,
+                                                     seq = seq, 
+                                                     frame = frame, 
+                                                     contig_id = seq.id, 
+                                                     species = species))
+            return
         if type(seqs) == SeqRecord:
             contig_ID = seqs.ID
-            self.tools["fasta"].update({filename : fastaTool(seqs, 
-                                                             frame, contig_ID, 
-                                                             species)})
+            self.tools["fasta"].update({filename : fastaTool(
+                                                filename = filename,
+                                                seq = seqs, 
+                                                frame = frame, 
+                                                contig_id = contig_ID, 
+                                                species = species)})
         
-    def addBlastTool(self, filename: str, ictv: bool):
-        self.tools["blast"].update({filename : blastTool(filename, ictv)})
+    def addBlastTool(self, filename: str, ictv: bool, blast_type = "Blastn"):
+        self.tools["blast"].update({filename : blastTool(filename, blast_type, ictv)})
     
     def addorfTool(self, contig_dir: str):
         new_tool = orfTool(contig_dir)
-        self.tools["orf"][contig_dir] = new_tool
+        self.tools["orf"] = new_tool
         return new_tool
     
     def addpfamTool(self, filename: str, outfile: str):
@@ -191,6 +212,11 @@ class toolBelt():
         self.tools["pfam"].update({filename : new_tool})
         return new_tool
     
+    def addRmaTool(self, file, output, db, reads, blast_kind):
+        new_tool = rmaTool(file, output, db, reads, blast_kind)
+        self.tools["rma"].update({file : new_tool})
+        return new_tool
+        
     def getTool(self, tool_kind: str, filename: str):
         return self.tools[toolkind][filename]
         
@@ -208,53 +234,73 @@ class toolBelt():
         for tool in chosen_tools:
             yield tool.process(func_to_call, *args, **kwargs)
     
-    def outputContigAll(self, out_dir: str):
+    def outputContigAll(self, out_dir: str, add_txt = "_hits"):
         for filename, tools in self.tools["fasta"].items():
             out_file = os.path.join(out_dir,
                                     f"{getSampleName(filename)}_{add_text}.fasta")
             with open(out_file, "w+") as fa:
                 for tool in tools:
                     tool.output(fa)
-            LOG.info(f"{filename} written with all hits for contig.")
+            LOG.info(f"{filename} written.")
                 
     #Note to self, write some functions to make this comprehension less Worse.            
     def outputContigBySpecies(self, out_dir: str):
         for filename in self.tools["fasta"]:
             for species in self.getUniqueSpecies():
-                current_tools = [tool for tool in filename 
+                current_tools = [tool for tool in self.getToolsByName("fasta", filename) 
                                  if tool.species == species]
                 out_file = os.path.join(out_dir, f"{species}_contigs.fasta")
                 with open(out_file, 'w+') as fa:
                     for tool in current_tools:
                         tool.output(fa)
     
+    def migrateFasta(self, in_file: str, out_file: str):
+        tools = self.tools["fasta"][in_file]
+        with open(out_file, "w+") as fa:
+            for tool in tools:
+                tool.output(fa)
+    
+    def getToolsByName(self, kind: str, name: str):
+        tools = []
+        for tool in self.getAllTools(kind):
+            if name in tool.filename:
+                tools.append(tool)
+        return tools
+                
     def mapFastaToBlast(self):
         for filename, tool in self.tools["blast"].items():
             all_info = tool.getHitFastaInfo()
+            sample_name = getSampleName(filename)
             for info in all_info:
-                self.labelFasta(filename,
-                                frame = info["Frame"],
-                                to_label = info["contig_id"],
-                                species = info["species"])
+                these_tools = self.getToolsByName("fasta", sample_name)
+                if not these_tools:
+                    continue
+                else:
+                    filename = these_tools[0].filename
+                    self.labelFasta(filename,
+                                    frame = info["Frame"],
+                                    to_label = info["contig_id"],
+                                    species = info["species"])
         
     def labelFasta(self, filename: str, frame: int, to_label: str, species: str):
-        fa_tools = self.tools["fasta"][filename]
-        for tool in fa_tools:
-            if tool.contig_id == to_label:
-                change_tool.updateSpecies(species)
+            for tool in self.tools["fasta"][filename]:
+                if tool.contig_id == to_label:
+                    tool.updateSpecies(species)
     
-    def makeTempFasta(self, filename: str, tmp_dir: str, 
-                      sample_name: str, n = 1) -> tuple:
-        seqs, tmp_fa = [], []
+    def makeTempFastas(self, filename: str, tmp_dir: str, 
+                       sample_name: str) -> dict:
+        seq_names, tmp_fas = [], []
         for i, tool in enumerate(self.tools["fasta"][filename]):
-            seq_name = tool.subSeqName(n, i, sample_name)
+            seq_name = subSeqName(tool.seq.description)
+            species = " ".join(tool.seq.description.split(" ")[1:])
+            tool.updateSpecies(species)
             tmp_file = os.path.join(tmp_dir, 
-                                    f"{sample_name}_seq_{n}f{i}_tmp.fasta")
-            seq_names.append(seq_name)
-            tmp.append(tmp_file)
+                                    f"{sample_name}_{seq_name}_tmp.fasta")
+            seq_names.append(species)
+            tmp_fas.append(tmp_file)
             with open(tmp_file, "w+") as fa:
                 tool.output(fa)
-        return seq_names, tmp_file
+        return seq_names, tmp_fas
     
     def getHitsCSVInfo(self) -> Generator[str, list]:
         for filename, tool in self.tools["blast"].items():
@@ -274,28 +320,64 @@ class toolBelt():
     def parseAlignments(self, header, search_params = None, get_all = False):
         all_queries_parsed, all_hits = 0, 0
         for tool in self.getAllTools("blast"):
+            LOG.info(f"Parsing {tool.filename}.")
             queries_parsed, hits = tool.parseAlignments(header, 
                                                         search_params, get_all)
             all_queries_parsed += queries_parsed
             all_hits += hits
         return all_queries_parsed, all_hits
     
-    def setupPfam(self, contig_dir: str, aa_dir: str, nt_dir: str):
+    def getORFs(self, contig_dir: str, aa_dir: str, nt_dir: str):
         this_orfTool = self.addorfTool(contig_dir)
         this_orfTool.getORFs(aa_dir, nt_dir)
     
-    def runPfam(self, contig_dir: str, db_dir: str, fasta_file: str, outfile: str):
+    def runPfam(self, db_dir: str, fasta_file: str, outfile: str):
         this_pfamTool = self.addpfamTool(fasta_file, outfile)
         this_pfamTool.runPfam(db_dir)
     
-    def getAnnotations(self, contig_dir: str, pfam_dir: str, gff3 = True):
-        r_params = self.tools["orf"][contig_dir].rObjs
-        pfam, df = pfamTool.parseJson(pfam_dir, r_params, gff3)
-        r_params.add_post_pfam(pfam, df)
-        self.tools["annot"] = annotTool(r_params)
+    def getAnnotations(self, pfam_dir: str, ORFs_file: str, gff3 = True):
+        pfamTool.parseJson(pfam_dir, ORFs_file, gff3)
     
-    def plotAnnotations(self, plot_img_dir: str, backmap_dir: str):
-        self.tools["annot"].plotAnnotations(contig_dir, plot_img_dir, backmap_dir)
+    def plotAnnotations(self, pfam_grl_file: str, pfam_df_file: str, 
+                              plot_img_dir: str, backmap_dir: str):
+        self.tools["orf"].plotAnnotations(pfam_grl_file, pfam_df_file,
+                                          plot_img_dir, backmap_dir)
+    
+    def sortFastaOnLen(self, in_fa: str, out_fa: str, min_len: int):
+        fas = self.getTool("fasta", in_fa)
+        sorted_fas = [fa for fa in fas if fa.longerThan(min_len)]
+        for fa in sorted_fas:
+            with open(out_fa, "w+") as file:
+                fa.output(file)
+                    
+    def filterFasta(self, in_fa: str, out_fa: str, on: str, flt: any):
+        self.addFastaTool(in_fa)
+        if on == "len":
+            self.sortFastaOnLen(in_fa, out_fa, flt)
+    
+    def blast2Rma(self, file, output, db, reads, blast_kind):
+        self.addRmaTool(file, output, db, reads, blast_kind)
+    
+    def getMeganReports(self, sortby: str, out_dir: str):
+        for rma in self.getAllTools("rma"):
+            unpacked = tool.Rma2Info(sortby)
+            add_txt_dict = rmaToolToFasta(unpacked, tool, sortby, out_dir) 
+                
+    def rmaToolToFasta(self, unpacked, tool, sortby, out_dir):
+        filename = tool.filename
+        sample = getSampleName(filename)
+        if sortby == "contig":
+            out_file =  os.path.join(out_dir, f"{sample}_rma_by_contig")
+            self.tools["fasta"]["filename"] = [fastaTool(ID = f"{contig}_{unpacked[contig][1]}", code = self._seq_dict[contig].seq) for contig in unpacked]
+        elif sortby == "virus":
+            for virus in unpacked:
+                virus_str = ("_").join(virus.split())
+                out_file = os.path.join(out_dir, f"{sample}_{virus_str}")
+                self.tools["fasta"][filename] = [fastaTool(ID = f"{contig}_{virus}", code = self._seq_dict[contig].seq) for contig in unpacked[virus]]
+                virs = self.getAllTools(fasta)
+                with open("w+", out_file) as fa:
+                    for tool in virs:
+                        tool.output(fa)
 
 @dataclass
 class Tool:
@@ -319,30 +401,32 @@ class fastaTool(Tool):
         if type(self.seq) == str:
             seq = [SeqRecord(seq = self.seq, 
                    id = "Unnamed_fasta", description = "")]
-        self.seq = seq
-        self.species = self.subSeqName(self.species)
+            self.seq = seq
+        self.species = subSeqName(self.species)
     
     def updateSpecies(self, species):
-        self.species, self.seq.description = self.subSeqName(species)
+        self.species = species
         
-    def subSeqName(self, to_sub: None):
-        to_sub = self.seq.description if not to_sub else to_sub
-        seq_name = re.sub("[ :.,()/]", "_", to_sub)
-        return seq_name
-        
-    def output(output_stream):
+    def output(self, output_stream):
         SeqIO.write(self.seq, output_stream, "fasta")
-
+    
+    def longerThan(self, min_len: int):
+        if(len(self.seq) >= int(min_len)):
+            return self
+            
 @dataclass
 class blastTool(Tool):
+    blast_type: str
     ictv: bool
-    blast_type: str = "Blastn"
     _queries: Generator = field(init = False)
               
     def __post_init__(self):
-        self._queries = (SearchIO.parse(self.filename, "blast-xml") if ictv 
-                         else NCBIXML.parse(handle, debug = 0))
+        self._queries = (SearchIO.parse(self.filename, "blast-xml") if self.ictv 
+                         else self.parseNCBI())
     
+    def parseNCBI(self):
+        return NCBIXML.parse(open(self.filename, "rU"), debug = 0)
+
     #Need to consult documentation to type hint this stuff.
     def parseHitData(self, hit, query, header: list) -> dict:
         aln_info = self.parseICTVData(hit, query) if self.ictv else self.parseNCBIData(hit, query)
@@ -355,53 +439,54 @@ class blastTool(Tool):
         species = re.sub("[ :.,()/]", "_", hit.description)
         ungapped = hsp.hit_span - hsp.gap_num
         coverage = getpercentage(hsp.hit_span,
-                                            len(hsp.query.seq))
+                                 len(hsp.query.seq))
         identity = getpercentage(hsp.ident_num, 
-                                            hsp.aln_span)
+                                 hsp.aln_span)
         return (species, coverage, identity, 
                 len(hsp.query.seq), hit.query_id, 
                 accession, "N/A", str(hsp.query.seq), ungapped, hsp.bitscore)
-    
-    @staticmethod    
-    def parseNCBIData(hit, query) -> tuple:
+      
+    def parseNCBIData(self, hit, query) -> tuple:
         #Assumes no frame.
+        alignment = query.alignments[0]
         frame = "N.A"
         hsp = hit.hsps[0]
         ungapped = hsp.align_length - hsp.gaps
         coverage = getpercentage(ungapped,
-                                            query.query_length)
+                                 query.query_length)
         identity = getpercentage(hsp.identities, 
-                                            hsp.align_length)
+                                 hsp.align_length)
         #These go by the formatting outputted by NCBI - 
         #the accession number is in the ID at different places.
         blast_letter = self.blast_type[-1]
-        splitnum = 3 if blast_letter == "N" else 3
+        splitnum = 3 if blast_letter.upper() == "N" else 1
         if blast_letter == "X":
             frame = hsp.frame
-        accession = alignment.hit_id.split("|")[splitnum]  
+        accession = alignment.hit_id.split("|")[splitnum]        
         #Unused for now - gb is genbank, ref is refseq.
         #db_type = alignment.hit_id.split("|")[0]
         return (alignment.hit_def, coverage, identity, 
                 query.query_length, query.query,
                 accession, frame[0], hsp.query, ungapped, hsp.bits)
-        
+    
         #Current implementation of the header feels dorky.
     def parseAlignments(self, header: list, 
                         search_params = None, get_all = True) -> tuple:
         all_aln = {}
-        for n, query in enumerate(self._queries):
-            aln = (self._parseICTVAln(query, n, header) if self.ictv 
-                   else self._parseNCBIAln(query, n, get_all, header))
-            all_aln.update(aln)
+        try:
+            for n, query in enumerate(self._queries):
+                aln = (self._parseICTVAln(query, n, header) if self.ictv else self._parseNCBIAln(query, n, get_all, header))
+                all_aln.update(aln)
+        except ParseError as err:
+            LOG.error(err)
         self.hits = (self.checkAlignments(all_aln, search_params) if search_params 
                      else all_aln)
         return n, len(self.hits)
             
     def _parseNCBIAln(self, query, n: int, get_all: bool, header: list) -> dict:
+        aln = {}
+        to_check = 0
         try:
-            #Fetches the application type if it doesn't already know.
-            if self.blast_type == "None":
-                self.blast_type = query.application
             if len(query.alignments) > 0:
                 to_check = len(query.alignments) if get_all == True else 1
             for i in range(to_check):
@@ -426,9 +511,9 @@ class blastTool(Tool):
             return {}
         checked_aln = {}
         for key, alignment in all_aln.items():
-            wl_species = any(term in alignment["species"].upper() 
+            wl_species = any(term.upper() in alignment["species"].upper() 
                              for term in search_params.search_term)
-            bl_species = any(term in alignment["species"].upper() 
+            bl_species = any(term.upper() in alignment["species"].upper() 
                              for term in search_params.blacklist)
             species_correct = wl_species and not bl_species
             correct = (species_correct 
@@ -454,36 +539,32 @@ class blastTool(Tool):
         return info 
         
     def getHitCSVInfo(self) -> list:
-        #This causes the string to go across the whole .csv but it's so funny.
         return [hit.values() for hit in self.hits.values()] if self.hits else None
-
-@dataclass
-class rmaTool(Tool):
-    pass
     
-@dataclass
-class rObjs:
-    ORFs: r.robject.RObject 
-    grl:  r.robject.RObject
-    fastas:  r.robject.RObject
-    
-    def add_post_pfam(self, pfam, df):
-        self.pfam_grl = pfam
-        self.pfam_df = df
-        
 class orfTool():
     def __init__(self, contig_dir: str):
         self.contig_dir = contig_dir
     
-    def getORFs(self, aa_dir: str, nt_dir: str):
+    @staticmethod
+    def init_r():
         r_path = importlib.resources.path(data, "annotatr_cli.r")
         r_script = os.path.abspath(r_path)
         r.r.source(r_script)
-        ORF_output = r.r['ORF_from_fasta'](self.contig_dir, aa_dir, nt_dir, 150)
-        self.rObjs = rObjs(ORF_output.rx2("ORFs"), 
-                     ORF_output.rx2("grl"),
-                     ORF_output.rx2("files"))
-
+        
+    def getORFs(self, aa_dir: str, nt_dir: str):
+        self.init_r()
+        r_output = r.r['ORF_from_fasta'](self.contig_dir, aa_dir, nt_dir, 150)
+        log = r_output.rx2("log")
+        self.grl_file = os.path.join(self.contig_dir, "grl.rdata")
+        LOG.info(log)
+    
+    def plotAnnotations(self, pfam_grl_file: str, pfam_df_file: str, 
+                              plot_img_dir: str, backmap_dir: str):
+        self.init_r()
+        r.r['generate_orf_plots'](self.grl_file, 
+                                  self.contig_dir, plot_img_dir, 
+                                  pfam_grl_file, pfam_df_file, backmap_dir)
+        
 @dataclass
 class pfamTool(Tool):
     outfile: str
@@ -495,22 +576,49 @@ class pfamTool(Tool):
         print(self.pfam_df)
     
     @staticmethod
-    def parseJson(pfam_dir: str, r_params, gff3 = True):
-        ORFs = r_params.ORFs
-        grl = r_params.grl
-        pfam_output = r.r['parse_pfam_json'](pfam_dir, ORFs)
+    def parseJson(pfam_dir: str, ORF_file: str, gff3 = True):
+        pfam_output = r.r['parse_pfam_json'](pfam_dir, ORF_file)
         if gff3:
             pfamTool.pfam_to_gff3()
-        return pfam_output.rx2("pfam"), pfam_output.rx2("df")
 
-@dataclass
-class annotTool():
-    r_params: rObjs
-    
-    def __post_init__(self):
-        self.grl = self.r_params.grl
-        self.fastas = self.r_params.fastas
-        self.pfam_df = self.r_params.pfam_df
+class rmaTool():
+    def __init__(self, file, output, db, reads, blast_kind):
+        rma_file = os.path.splitext(os.path.basename(file))[0] + ".rma6"
+        self.filename = os.path.join(output, rma_file)
+        runBlast2Rma(file, output, db, reads, blast_kind)
         
-    def plotAnnotations(self, contig_dir: str, plot_img_dir: str, backmap_dir: str):
-        r.r['generate_orf_plots'](self.grl, contig_dir, self.fastas, plot_img_dir, self.pfam_grl, self.pfam_df, backmap_dir)
+    def Rma2Info(self, sortby: str) -> dict:
+        file_no_extension = os.path.splitext(filename)[0]
+        self.rma_txt = file_no_extension + "_info"
+        runRma2Info(self.filename, self.rma_txt)
+        if sortby == "contig":
+            self.info_dict = self.sortByContig()
+        elif sortby == "virus":
+            self.info_dict = self.sortByVirus()
+        else:
+            log.ERROR("Must sort by contig or virus.")
+        return self.info_dict
+            
+    def sortByContig(self) -> dict:
+        info_dict = {}
+        with open(self.rma_txt, 'r') as info:
+            for line in info.readlines():
+                contig_name, rank, *virus_name = line.split("\t")
+                virus_name = "_".join(virus_name).strip()
+                virus_name = virus_name.replace(" ", "_")
+                info_dict[contig_name] = [rank, virus_name]
+                self._sorted = "contig"
+        return info_dict
+        
+    def sortByVirus(self) -> dict:
+        info_dict = defaultdict(list)
+        with open(self.rma_txt, 'r') as info:
+            for line in info.readlines():
+                contig_name, rank, virus_name = line.split("\t")
+                virus_name = virus_name.replace(" ", "_")
+                info_dict[virus_name].append(contig_name)
+        self._sorted = "virus"
+        return info_dict
+        
+    def getInfo(self) -> dict:
+        return self.info_dict

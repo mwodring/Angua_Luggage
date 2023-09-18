@@ -2,7 +2,7 @@ import functools
 
 #Also copped directly from Real Python.
 def debug(func):
-    """Print the function signature and return value"""
+    # """Print the function signature and return value"""
     @functools.wraps(func)
     def wrapper_debug(*args, **kwargs):
         args_repr = [repr(a) for a in args]                      # 1

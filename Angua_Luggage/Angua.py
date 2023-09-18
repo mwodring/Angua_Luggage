@@ -1,9 +1,6 @@
-import os
-import sys
-import subprocess
-import multiprocessing
+import os, sys, shutil, multiprocessing
+import .exec_Angua
 import argparse
-import shutil
 import datetime
 import inspect
 import pysam
@@ -12,58 +9,178 @@ from pathlib import Path
 from Bio import SeqIO
 from Bio.Blast import NCBIXML
 
+from .Luggage import fileHandler, toolBelt
+
+#Doesn't use a file right this second but it will.
+logging.basicConfig(stream = sys.stdout)
+LOG = logging.getLogger(__name__)
+
+class Angua(fileHandler):
+	def __init__(self):
+		super().__init__()
+		#This is hard-coded for now but I'll change it soon.
+		self.initPipelineFolders()
+	
+	def optional_folders(func):
+		#This function looks at the input args and checks if it needs to override
+		#any defaults.
+        @functools.wraps(func)
+        def wrapper_optional_folders(self, *args, **kwargs):
+            for arg_name, arg_contents in kwargs.items():
+                if arg_name.endswith("dir") and arg_contents:
+                    dir_kind = "_".join(arg_name.split("_")[:-1])
+                    self.addFolder(dir_kind, arg_contents)
+            return func(self, *args, **kwargs)
+        return wrapper_optional_folders
+        
+	def extendFolderMultiple(self, orig_dir_kind: str, 
+								   dir_kinds: list, dir_names: list):
+		#Zip?
+		for dir_kind, dir_name in zip(dir_kinds, dir_names):
+			self.extendFolder(orig_dir_kind, dir_kind, dir_name)
+			
+	def initPipelineFolders(self):
+		self.extendFolder("out", "results", "Results")
+		self.extendFolder("out", "qc", "QC")
+		self.extendFolderMultiple("QC", ["QC_raw_F", "QC_raw_M"],
+										["FastQC", "MultiQC"])
+		self.extendFolderMultiple("QC", ["QC_trimmed_F", "QC_trimmed_M"],
+										["FastQC", "MultiQC"])
+		self.extendFolder("out", "trimmed", "Bbduk")
+		self.extendFolder("out", "trinity", "Trinity")
+		self.extendFolder("out", "contigs", "Contigs")
+		self.extendFolder("out", "clustered", "Mmseqs2")
+		self.extendFolder("out", "unmapped", "Unmapped")
+		self.extendFolderMultiple("unmapped", 
+								 ["unm_bwa", "unm_reads",  "unm_clust"
+								  "unm_blastn"],
+								 ["BwA", "Reads", "Mmseqs2", "Blastn"])
+		self.extendFolderMultiple("out", ["blastn", "blastx"], 
+										 ["Blastn", "Blastx"])
+		self.extendFolder["out", "megan", "Megan"]
+		self.extendFolderMultiple("megan", ["meg_blastn", "meg_blastx"],
+										   ["blastn", "blastx"])
+										   
+	@optional_folders
+	def pre_qc_checks(self, qc_threads: int, raw_dir = "", 
+							QC_raw_F_dir = "", QC_raw_M_dir = ""):
+		# Run FastQC and MultiQC on the supplied directory
+		fastqc_dir = self.getFolder("QC_raw_F")
+		exec_Angua.fastQC(qc_threads, self.getFolder("raw"), fastqc_dir)
+		exec_Angua.multiQC(fastqc_dir, self.getFolder("QC_raw_M"))
+	
+	@optional_folders
+	def post_qc_checks(self, qc_threads: int, 
+							 QC_trimmed_F_dir = "", QC_trimmed_M_dir = ""):
+		exec_Angua.fastQC(qc_threads, self.getFolder("trimmed"), 
+									  self.getFolder("QC_trimmed_F")
+		exec_Angua.multiQC(self.getFolder("QC_trimmed_F"),
+						   self.getFolder("QC_trimmed_M")	
+	
+	@optional_folders
+	def run_bbduk(self, min_len: int, adapters: str, min_q: int, 
+						raw_dir = "", trimmed_dir = ""): 
+		trimmed_dir = self.getFolder("trimmed")
+		out_dir = self.getFolder("raw")
+		for file_R1 in self.getFiles("raw", "_R1.fasta"):
+			file_R2 = file.replace("_R1", "_R2")
+			sample_name_R1 = getSampleName(file_R1)
+			sample_name_R2 = sample_name_R1.replace("_R1", "_R2")
+
+			trimmer_input_R1 = os.path.join(raw_dir, file_R1)
+			trimmer_input_R2 = os.path.join(raw_dir, file_R2)
+			trimmer_output_R1 = os.path.join(trimmed_dir, file.replace('_L001_R1_001', '_R1'))
+			trimmer_output_R2 = os.path.join(trimmed_dir, file_R2.replace('_L001_R2_001', '_R2'))
+
+			exec_Angua.runBbduk(trimmed_input_R1, trimmer_input_R2
+								trimmer_output_R1, trimmer_output_R2
+								min_len, adapters, min_q)
+	
+	#I can probably use a function to set up the _R2 files since this repeatd the above.
+	@optional_folders
+	def run_trinity(mem: str, threads: int,
+					trimmed_dir = "", trinity_dir = ""):
+		for file_R1 in self.getFiles("trimmed", "_R1.fasta"):
+			file_R2 = file.replace("_R1", "_R2")
+			sample_name_R1 = getSampleName(file_R1)
+			sample_name_R2 = sample_name_R1.replace("_R1", "_R2")
+			
+			trimmed_dir, trinity_dir = self.getFolder("trimmed"), 
+								       self.getFolder("trinity")
+			trinity_input_R1 = os.path.join(trimmed_dir, file)
+			trinity_input_R2 = os.path.join(trimmed_dir, file)
+			trinity_output = os.path.join(
+							 trinity_dir, 
+							 f"{sample_name_R1.replace('_R1', '_trinity')}")
+			trinity_log = os.path.join(
+						  trinity_dir,
+						  f"{sample_name_R1.replace('_R1', '.log')}")
+
+			log = exec_Angua.runTrinity(trinity_input_R1, trinity_input_R2,
+									    trinity_output, mem, threads)
+			LOG.info(log)
+	
+	### Sort and rename contigs
+	def sort_fasta_by_length(self, min_len: int):
+		out = self.extendFolder("contigs", f"sorted_{min_len}", str(min_len))
+		for file in self.getFiles("contigs", ".fasta"):
+			sample_name = file.split("_trinity")[0]
+			output_file = os.path.join(out, 
+									   f"{sample_name}_sorted_{min_length}.fasta"
+			self._toolBelt.filterFasta(file, output_file, "len", min_len)
+	
+	@optional_folders
+	def cluster_reads(self, dir_kind: str, perc, threads: int, 
+							cluster_dir = "", cluster-in_dir = ""):
+		if not self.getFolder(dir_kind):
+			dir_kind = "cluster-in"
+		if not self.getFolder("cluster"):
+			out_dir = self.extendFolder("out", "cluster", "Mmseqs2")
+		else:
+			out_dir = self.getFolder("cluster")
+		for file in self.getFiles(dir_kind):
+			sample_name = getSampleName(file)
+			exec_Angua.cluster(file, out_dir, perc, threads) 
+			# Remove and rename intermediate files
+			os.remove(os.path.join(out_dir, f"{file}_all_seqs.fasta"))
+			before_rep_seq, after_rep_seq = os.path.join(out_dir, 
+														 f"{file}_rep_seq.fasta"),
+											os.path.join(out_dir,
+														 f"{sample_name}_rep_seq.fasta")
+			os.rename(before_rep_seq, after_rep_seq)
+			before_tsv, after_tsv = os.path.join(out_dir,
+												 f"{file}_cluster.tsv"),
+									os.path.join(out_dir,
+												 f"{sample_name}_cluster.tsv")
+			os.rename(before_tsv, after_tsv)
+
+	# Remove the tmp dir
+	shutil.rmtree(f"{output_dir}/tmp/")
+
+	print("Clustering complete.")
+		
+			
+		
 def main():
-
-	# Angua script version
-	angua_version = 1
-
-	# Input arguments
+	angua_version = 3
 	options = parse_arguments()
 
 	### Main Pipeline
 	if(sys.argv[1] == "main"):
-
-		# Directory list to create
-		dirs = ["Results",
-			"QC",
-			"QC/raw/FastQC",
-			"QC/raw/MultiQC",
-			"QC/trimmed/FastQC",
-			"QC/trimmed/MultiQC",
-			"Bbduk",
-			"Trinity",
-			"Contigs",
-			"Contigs/200",
-			"Contigs/1000",
-			"Mmseqs2",
-			"Unmapped",
-			"Unmapped/BWA",
-			"Unmapped/Reads",
-			"Unmapped/Mmseqs2",
-			"Unmapped/Blastn",
-			"Blastn",
-			"Blastx",
-			"Megan",
-			"Megan/Blastn",
-			"Megan/Blastx",
-			"Results"
-			]
-
-		if options.create_dirs == "Y":
-			create_dirs(options.output, dirs)
+		angua = Angua("out", options.output)
+		if options.qc:
+			angua.pre_qc_checks(options.qc_threads, raw_dir = options.in_dir)
+		run_bbduk(options.bbduk_minl, options.bbduk_adapters, options.bbduk_q
+				  raw_dir = options.in_dir)
 		if options.qc == "Y":
-			qc_checks(options.input, f"{options.output}/QC/raw/", options.qc_threads)
-		if options.qc == "Y":
-			run_bbduk(options.input, f"{options.output}/Bbduk/", options.bbduk_minl, options.bbduk_adapters, options.bbduk_q)
-		if options.qc == "Y":
-			qc_checks(f"{options.output}/Bbduk/", f"{options.output}/QC/trimmed/", options.qc_threads)
+			angua.post_qc_checks(options.qc_threads)
 		if options.trinity == "Y":
-			run_trinity(f"{options.output}/Bbduk/", f"{options.output}/Trinity/", options.trinity_mem, options.trinity_cpu)
+			angua.run_trinity(options.trinity_mem, options.trinity_cpu)
 		if options.sort == "Y":
-			sort_fasta(f"{options.output}/Trinity/", f"{options.output}/Contigs/200/", 200)
-			sort_fasta(f"{options.output}/Trinity/", f"{options.output}/Contigs/1000/", 1000)
-		if options.cluster == "Y":
-			cluster_fasta(f"{options.output}/Contigs/1000/", f"{options.output}/Mmseqs2/", options.cluster_perc, options.cluster_threads)
+			angua.sort_fasta_by_length(200)
+			angua.sort_fasta_by_length(1000)
+			if options.cluster == "Y":
+				angua.cluster_fasta("sorted_1000", options.cluster_perc, options.cluster_threads)
 		if options.unmapped == "Y":
 			get_unmapped(f"{options.output}/Contigs/200/", f"{options.output}/Bbduk/", f"{options.output}/Unmapped/", options.bwa_threads, options.min_alignment)
 			cluster_fasta(f"{options.output}/Unmapped/Reads/", f"{options.output}/Unmapped/Mmseqs2/", options.cluster_perc, options.cluster_threads)
@@ -120,109 +237,7 @@ def main():
 
 		if options.text_searcher == "Y":
 			text_search(options.input, f"{options.output}/Text-Searcher/", options.output_filename ,options.search_term, options.min_alignment)
-
-################################################################################
-def create_dirs(output_dir, dirs):
-	# Create the directories if they do not exist
-
-	for directory in dirs:
-		Path(output_dir, directory).mkdir(exist_ok = True, parents = True)
-
-	print("Directory creation completed.")
-
-################################################################################
-def qc_checks(input_dir, output_dir, threads):
-	# Run FastQC and MultiQC on the supplied directory
-
-	subprocess.call(f"fastqc -t {threads} {input_dir}/* -o {output_dir}/FastQC/", shell = True)
-	subprocess.call	(f"multiqc {output_dir}/FastQC/ -o {output_dir}/MultiQC/", shell = True)
-
-	print("Quality control checks completed.")
-
-################################################################################
-def run_bbduk(input_dir, output_dir, min_len, adapters, min_q):
-	# Call the looper function to get a list of files in the directory
-	# Run Bbduk on the returned list of flies
-
-	input_files = looper(input_dir, "qualified", "_R1")
-
-	for file in input_files:
-		file_R2 = file.replace("_R1", "_R2")
-		sample_name_R1 = file.split(".")[0]
-		sample_name_R2 = sample_name_R1.replace("_R1", "_R2")
-
-		trimmer_input_R1 = f"{input_dir}/{file}"
-		trimmer_input_R2 = f"{input_dir}/{file_R2}"
-		trimmer_output_R1 = f"{output_dir}/{file.replace('_L001_R1_001', '_R1')}"
-		trimmer_output_R2 =f"{output_dir}/{file_R2.replace('_L001_R2_001', '_R2')}"
-
-		subprocess.call(f"bbduk.sh in1={trimmer_input_R1} in2={trimmer_input_R2} out1={trimmer_output_R1} out2={trimmer_output_R2} minlen={min_len} ktrim=r k=23 mink=11 hdist=1 ref={adapters} qtrim=r trimq={min_q}", shell = True)
-
-	print("Bbduk complete.")
-
-################################################################################
-def run_trinity(input_dir, output_dir, mem, threads):
-	# Call the looper function to get a list of files in the directory
-	# Run Trinity on the returned list of flies
-
-	input_files = looper(input_dir, "qualified", "_R1")
-
-	for file in input_files:
-		file_R2 = file.replace("_R1", "_R2")
-		sample_name_R1 = file.split(".")[0]
-		sample_name_R2 = sample_name_R1.replace("_R1", "_R2")
-
-		trinity_input_R1 = f"{input_dir}/{file}"
-		trinity_input_R2 = f"{input_dir}/{file_R2}"
-		trinity_output = f"{output_dir}/{sample_name_R1.replace('_R1', '_trinity')}"
-		trinity_log = f"{output_dir}/{sample_name_R1.replace('_R1', '.log')}"
-
-		subprocess.call(f"Trinity --seqType fq --max_memory {mem} --left {trinity_input_R1} --right {trinity_input_R2} --CPU {threads} --full_cleanup --output {trinity_output} > {trinity_log}", shell = True)
-
-	print("Trinity complete.")
-
-################################################################################
-def sort_fasta(input_dir, output_dir, min_length):
-	### Sort and rename contigs
-
-	input_files = looper(input_dir, "single", ".fasta")
-
-	for file in input_files:
-		if(file.endswith(".fasta")):
-			sample_name = file.split("_trinity")[0]
-			input_file = f"{input_dir}/{file}"
-			output_file = f"{output_dir}/{sample_name}_sorted_{min_length}.fasta"
-
-			with open(output_file, "w") as contigs_out:
-				for seq_record in SeqIO.parse(open(input_file, mode = "r"), "fasta"):
-					seq_record.id = f"{output_dir.split('/')[0]}_{sample_name.split('_')[-1]}_{seq_record.id}"
-					seq_record.description = f"{output_dir.split('/')[0]}_{sample_name.split('_')[-1]}_{seq_record.description}"
-
-					if(len(seq_record.seq) >= int(min_length)):
-						SeqIO.write(seq_record, contigs_out, "fasta")
-
-	print("Sorting complete.")
-
-################################################################################
-def cluster_fasta(input_dir, output_dir, cluster_perc, threads):
-
-	input_files = looper(input_dir, "single", ".fasta")
-
-	for file in input_files:
-		sample_name = file.split(".fasta")[0]
-
-		subprocess.call(f"mmseqs easy-cluster -c {cluster_perc} --threads {threads} -v 0 {input_dir}/{file} {output_dir}/{sample_name}.fasta {output_dir}/tmp", shell = True)
-
-		# Remove and rename intermediate files
-		os.remove(f"{output_dir}/{file}_all_seqs.fasta")
-		os.rename(f"{output_dir}/{file}_rep_seq.fasta", f"{output_dir}/{sample_name}_rep_seq.fasta")
-		os.rename(f"{output_dir}/{file}_cluster.tsv", f"{output_dir}/{sample_name}_cluster.tsv")
-
-	# Remove the tmp dir
-	shutil.rmtree(f"{output_dir}/tmp/")
-
-	print("Clustering complete.")
-
+			
 ################################################################################
 def get_unmapped(input_assembly_dir, input_reads_dir, output_dir, min_alignment_len, threads):
 	
@@ -280,20 +295,6 @@ def run_megan(input_dir, output_dir, mode, reads, a2t):
 		subprocess.call(f"blast2rma -i {input_file} -f BlastXML -bm {mode} -r {input_reads} -ms 75 -sup 1 -a2t {a2t} -o {output_dir}", shell = True)
 
 		print(f"Megan complete for sample: {file.split('.')[0]}")
-
-################################################################################
-def looper(input_dir, mode, qualifier):
-	# Loop through files in a directory and return a list of contents
-
-	files = []
-	for file in os.listdir(input_dir):
-		if mode == "qualified":
-			if(qualifier in file):
-				files.append(file)
-		elif mode == "single":
-			files.append(file)
-
-	return files
 
 ################################################################################
 def find_taxa(input_dir, output_dir, hmm, size):

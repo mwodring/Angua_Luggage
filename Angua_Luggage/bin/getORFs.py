@@ -6,11 +6,7 @@ Created on Tue Dec  6 10:19:35 2022
 """
 
 import argparse, sys, os, logging, logging.config
-from ..LuggageInterface import pfam
-
-
-logging.basicConfig(stream = sys.stdout)
-LOG = logging.getLogger(__name__)
+from ..LuggageInterface import Annotatr
 
 def parseArguments():
     parser = argparse.ArgumentParser(description = 
@@ -36,15 +32,24 @@ def parseArguments():
     parser.add_argument("--gff3",
                         help = "Output annotations as a GFF3 file.",
                         action = "store_true")
+    parser.add_argument("-ex", "--extend",
+                        help = "Number of underscore extensions to the file. -Angua specific-",
+                        required = False,
+                        type = int)
                         
     return parser.parse_args()
     
 def main():
+    logging.basicConfig(stream = sys.stdout)
+    LOG = logging.getLogger(__name__) 
+
     args = parseArguments()
-    plotter = pfam("contigs", args.in_dir)
-    plotter.setupPfam(args.out_dir)
+    plotter = Annotatr("contigs", args.in_dir, args.extend)
+    plotter.getORFs(args.out_dir)
     plotter.runPfam(args.db_dir)
-    plotter.getAnnotations(plot = args.no_plot, gff3 = args.gff3, trimmed_dir=args.trimmed)
+    plotter.getAnnotations(no_plot = args.no_plot, 
+                           gff3 = args.gff3, 
+                           trimmed_dir=args.trimmed)
     
 if __name__ == "__main__":
     sys.exit(main())

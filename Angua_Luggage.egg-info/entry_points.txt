@@ -1,3 +1,0 @@
-[console_scripts]
-annotatr = Angua_Luggage.bin.getORFs:main
-parseBlast = Angua_Luggage.bin.parseBlastXML:main

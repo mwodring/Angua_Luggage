@@ -1,8 +1,9 @@
 from .Luggage import fileHandler, csvHandler
-from .utils import getSampleName
+from .utils import getSampleName, Cleanup, subSeqName
 from .exec_utils import *
 import json, importlib.resources
 from . import data
+import os
 
 LOG = logging.getLogger(__name__)
 LOG.addHandler(logging.NullHandler())
@@ -38,12 +39,11 @@ class blastParser(fileHandler):
                                   csv_file = csv_file)
                                   
     def hitsToCSV(self, add_text: ""):
-        self.updateFastaInfo()
         csv_out_folder = os.path.join(self.getFolder("out"), "csv")
         self.addFolder("csv", csv_out_folder)
         for filename, info in self._toolBelt.getHitsCSVInfo():
             if info:
-                sample_name = getSampleName(filename)
+                sample_name = getSampleName(filename, self.extend)
                 out_file = os.path.join(csv_out_folder, 
                                         f"{sample_name}_{add_text}.textsearch.csv")
                 csvHandler.outputHitsCSV(header = header, 
@@ -53,82 +53,89 @@ class blastParser(fileHandler):
     
     def hitContigsToFasta(self, by_species = False):
         out_dir = os.path.join(self.getFolder("out"), "contigs")
+        self.updateFastaInfo()
         self.addFolder("parsed_contigs", out_dir)
         if not by_species:
             self._toolBelt.outputContigsAll(out_dir = out_dir)
         else:
             self._toolBelt.outputContigBySpecies(out_dir = out_dir)
     
-    def hitAccessionsToFasta(self, email: str):
-        hit_dir = os.path.join(self.getFolder("out"), "hit_fastas")
-        self.addFolder("accs", hit_dir)
-        #TODO: This should use the merged csv or better yet the toolBelt.
+    def hitAccessionsToFasta(self, email: str, db_type="N"):
+        db_type = "nuc" if db_type == "N" else "prot"
+        out_dir = self.extendFolder("out", "acc", "hit_fastas")
         for file in self.getFiles("csv", ".textsearch.csv"):
-            filename = os.path.splitext(os.path.basename(file))[0]
-            sample_name = "_".join(filename.split("_")[:-3])
+            sample_name = getSampleName(file, self.extend)
             accessions = csvHandler.getCSVAccessions(file)
-            fa_filename = f"{os.path.splitext(sample_name)[0]}_accessions.fasta"
-            fetchEntrezFastas(id_list = accessions, 
-                                        out_dir = hit_dir, 
-                                        email = email, 
-                                        filename = fa_filename)
-            self.addFastaFile(fa_filename)
-        #Might be worth naming these based on the samples they come from rather 
-        #than the full csv.
+            fa_filename = f"{sample_name}_accessions.fasta"
+            out = os.path.join(out_dir, fa_filename)
+            handle = fetchEntrez(id_list = accessions, 
+                                 email = email, 
+                                 db_type = db_type)
+            if handle:
+                sequences = SeqIO.parse(handle, "fasta")
+                with open(out, "w+") as fa:
+                    #SeqIO returns the count when it works, which is handy.
+                    count = SeqIO.write(sequences, fa, "fasta")
+                    LOG.info(f"{count} sequences found and written for {sample_name}.")
+                    self.addFastaFile(out)
         
-    def makeTempFastas(self, raw_dir: str, 
-                       sample_name: str, fasta_file: str) -> dict:
-        self.addFolder("raw", raw_dir)
-        tmp_dir = os.path.join(self._dirs["acc"], "tmp")
-        self.addFolder("tmp", tmp_dir)
-        tmp_seqs_dict = {}
-        for n, raw_reads in enumerate(self.getFiles("raw", ".fasta")):
-            if sample_name in raw_reads:
-                tmp_seqs_dict[sample_name] = {"raw" : raw_reads,
-                                              "seq_to_tmp" : {}}
-            self.addFastaFile(filename = fasta_file, seqs = SeqIO.parse(fasta_file, 
-                          "fasta"))
-            seq_names, tmp = self._toolBelt.makeTempFasta(fasta_file, n = n,
-                                                         tmp_dir = self.getFolder["tmp"])
-            tmp_seqs_dict[sample_name]["seq_to_tmp"].update(zip(seq_names, tmp))
-        return tmp_seqs_dict    
+    def makeTempFastas(self, sample_name: str, fasta_file: str) -> dict:
+        seq_names, tmp_fas = self._toolBelt.makeTempFastas(
+                                fasta_file,
+                                tmp_dir = self.getFolder("tmp"),
+                                sample_name = sample_name)
+        return seq_names, tmp_fas 
     
-    def runBwaTS(self, raw_dir: str) -> list:
+    def runBwaTS(self, raw_dir: str, in_dir_type: str, extend = 0) -> list:
         self.addFolder("raw", raw_dir)
+        self.findFastaFiles("raw")
         self.addFolder("bwa", os.path.join(self.getFolder("out"), "bwa"))
         tsv_files = []
         all_samples_dict = {}
-        for fasta in self.getFiles("acc", ".fasta"):
-            sample_name = "_".join(
-                          os.path.splitext(
-                          os.path.basename(fasta))[0]
-                          .split("_")[:-1])
-            #This need rewriting to be clearer.
-            all_samples_dict.update(self.makeTempFastas(self.getFolder("raw"), 
-                                                        sample_name, fasta))
-        for sample_name, details in all_samples_dict.items():        
-            bwa_reads = details["raw"]
-            for i in range(len(details["tmp"])):
-                tmp_fa = details["tmp"][i]
-                seq_name = details["seq_names"][i]
-                out_file = os.path.join(bwa_dir, 
-                                        f"{sample_name}_{seq_name}.sorted.bam")
-                runBwa(tmp_fa, bwa_reads, out_file)
+        tmp_dir = os.path.join(self.getFolder("acc"), "tmp")
+        self.addFolder("tmp", tmp_dir)
+        for fasta in self.getFiles(in_dir_type, ".fasta"):
+            self.addFastaFile(fasta)
+            sample_name = getSampleName(fasta, extend = extend)
+            seq_names, tmp_fas = self.makeTempFastas(sample_name, fasta)
+            all_samples_dict[sample_name] = dict(zip(seq_names, tmp_fas))
+        for sample_name, seq_to_tmp in all_samples_dict.items():
+            bwa_reads = self.findRawBySample(sample_name)
+            for seq_name, tmp_fa in seq_to_tmp.items():
+                underscore_seq_name = subSeqName(seq_name)
+                out_file = os.path.join(self.getFolder("bwa"), 
+                                        f"{sample_name}_{underscore_seq_name}.sam")
+                sorted_file = os.path.join(self.getFolder("bwa"), 
+                                           f"{sample_name}_{underscore_seq_name}.sorted.bam")
+                if not os.path.exists(sorted_file):
+                    runBwa(tmp_fa, bwa_reads, out_file)
+                    samSort(out_file, sorted_file)
+                    self.extendFolder("out", "hist", "Histograms")
+                    hist_file = os.path.join(self.getFolder("hist"), 
+                                                            f"{sample_name}_{underscore_seq_name}_hist.txt")
+                    outputSamHist(sorted_file, hist_file)
+                    self.coverageToTSV(out_file, sample_name, seq_name)
                 #Just remove the folder - write a remove dir function.
                 os.remove(tmp_fa)
-                self.coverageToTSV(out_file, sample_name, seq_name)
-        #Presumably needs the .clean or whatever?
-        Cleanup([self._dirs["acc"]], [".amb", ".ann", ".bwt", ".pac", ".sa"])
+        Cleanup(self.getFolder("acc"), [".amb", ".ann", ".bwt", ".pac", ".sa"])
+        Cleanup(self.getFolder("bwa"), [".sam"])
         return tsv_files
-    
-    def coverageToTSV(self, bwa_file: str, 
-                       sample_name: str, seq_name: str) -> str:
-        num_mapped_reads = getNumMappedReads(bwa_file, 
-                                                        sample_name, seq_name, 
-                                                        self.getFolder("bwa"))
-        tsv_file = os.join(self.getFolder('bwa'), 
-                           f"{sample_name}_{seq_name}.tsv")
-        csvHandler.mappedReadsTSV(tsv_file, sample_name)
+        
+    def findRawBySample(self, sample_name: str):
+        files = []
+        for file in self.getFiles("raw", [".fasta", ".fq"]):
+            if sample_name in file:
+                files.append(file)
+        return files
+            
+    @staticmethod
+    def coverageToTSV(bwa_file: str, 
+                      sample_name: str, seq_name: str) -> str:
+        bwa_dir = os.path.dirname(bwa_file)
+        num_mapped_reads = getNumMappedReads(bwa_file)
+        tsv_file = os.path.join(bwa_dir, 
+                                f"{sample_name}_{seq_name}.tsv")
+        csvHandler.mappedReadsTSV(tsv_file, sample_name, seq_name, num_mapped_reads)
         return tsv_file
         
 class SRA(fileHandler):
@@ -163,33 +170,96 @@ class SRA(fileHandler):
             #Returns the sample number for logging purposes if so desired.
         return sample_num
 
-class pfam(fileHandler):
+class Annotatr(fileHandler):
     def generateorfTools(self):
-        self._toolBelt.setupPfam(self.getFolder("contigs"), self.getFolder("aa"), self.getFolder("ORF_nt"))
+        self._toolBelt.getORFs(self.getFolder("contigs"), 
+                                 self.getFolder("aa"), 
+                                 self.getFolder("ORF_nt"))
     
-    def setupPfam(self, out_dir: str, contig_dir = None):
+    def getORFs(self, out_dir: str, contig_dir = None):
         self.addFolder("ORFs", out_dir)
         if contig_dir:
             self.addFolder("contigs", contig_dir)
         self.extendFolder("ORFs", "aa", "aa")
         self.extendFolder("ORFs", "ORF_nt", "nt")
         self.generateorfTools()
+        self.ORF_file = os.path.join(self.getFolder("contigs"), "ORFs.rdata")
+        self.grl_file = os.path.join(self.getFolder("contigs"), "grl.rdata")
             
     def runPfam(self, db_dir: str, add_text = "_virus"):
+        pfam_dir = self.extendFolder("ORFs", "pfam", "pfam_json")
         for file in self.getFiles("aa", ".fasta"):
             fasta_filename = os.path.basename(file)
             sample_name = "_".join(fasta_filename.split("_")[:-3])
-            pfam_dir = self.extendFolder("ORFs", "pfam", "pfam_json")
             outfile = os.path.join(pfam_dir, f"{sample_name}{add_text}.json")
-            self._toolBelt.runPfam(self.getFolder("contigs"), db_dir, file, outfile)
+            if not os.path.exists(outfile):
+                self._toolBelt.runPfam(db_dir, file, outfile)
+            self.pfam_grl_file = os.path.join(pfam_dir, "pfam_grl.rdata")
+            self.pfam_df_file = os.path.join(pfam_dir, "pfam_df.rdata")
     
-    def getAnnotations(self, plot = True, gff3 = True, trimmed_dir = ""):
-        self._toolBelt.getAnnotations(self.getFolder("contigs"), self.getFolder("pfam"), gff3)
-        if plot:
+    def getAnnotations(self, trimmed_dir: str, no_plot = False, gff3 = True):
+        self._toolBelt.getAnnotations(self.getFolder("pfam"), self.ORF_file, gff3)
+        if not no_plot:
             self.addFolder("trimmed", trimmed_dir)
-            backmap_dir = self.extendFolder("contigs", "backmap", "backmap")
             self.backMap()
-            Cleanup([self._getFolder("contigs")], [".64", ".pac", ".fai", ".ann", ".amb", ".0123"])
-            plot_dir = self.extendFolder("pfam", "plots", "ORF_plots")
-            self._toolBelt.plotAnnotations(self.getFolder("contigs"), plot_dir, backmap_dir)
+            plot_dir = self.extendFolder("ORFs", "plots", "ORF_plots")
+            self._toolBelt.plotAnnotations(self.pfam_grl_file, self.pfam_df_file, 
+                                           plot_dir, self.getFolder("bedgraph"))
     
+    def backMap(self):
+        backmap_dir = self.extendFolder("contigs", "backmap", "backmap")
+        sorted_files = {}
+        for file in self.getFiles("contigs", ".fasta"):
+            sample_name = getSampleName(file, extend = self.extend)
+            out_file = os.path.join(backmap_dir, f"{sample_name}.bam")
+            if not os.path.exists(out_file):
+                current_trimmed = self.findTrimmed(sample_name)
+                sam_file = os.path.splitext(out_file)[0] + ".sam"
+                bwa_proc = runBwa(file, current_trimmed, sam_file)
+                bam_file = os.path.splitext(out_file)[0] + ".bam"
+                samSort(sam_file, bam_file)
+                Cleanup(backmap_dir, ".sam")
+            sorted_files.update({sample_name : out_file})
+        #Probably set flags to keep or not keep them.
+        Cleanup([self.getFolder("contigs")], [".64", ".pac", ".fai", 
+                                              ".ann", ".amb", ".0123"])    
+        out_dir = self.extendFolder("pfam", "bedgraph", "bedGraph")
+        for sample, file in sorted_files.items():
+            out_file = os.path.join(out_dir, f"{sample}.bedGraph")
+            if not os.path.exists(f"{out_file}.gz"):
+                self.bamToBG(out_file, file)
+        
+    @staticmethod
+    def bamToBG(out_file: str, bam: str):
+        runBedtools(out_file, bam)
+        
+    def findTrimmed(self, sample: str) -> list[str]:
+        return [file for file in 
+                self.getFiles("trimmed") 
+                if os.path.basename(file).startswith(sample)]
+
+class rmaHandler(fileHandler):
+    def blast2Rma(self, outdir, db, reads, blast_kind = "BlastN"):
+        output = self.addFolder("megan", outdir)
+        for file in self.getFolder("xml", ".xml"):
+            self.ToolBelt.runBlast2Rma(file, output, db, reads, blast_kind = blast_kind)
+    
+    def getMeganReport(self):
+        self.ToolBelt.getMeganReports()
+
+class spadesTidy(fileHandler):
+    def spadesToDir(self, out_dir: str):
+        in_dir = self.getFolder("in")
+        self.addFolder("out", out_dir)
+        for item in os.listdir(in_dir):
+            item_abs = os.path.join(in_dir, item)
+            if os.path.isdir(item_abs):
+                LOG.debug(f"Found {item}")
+                scaffolds = os.path.join(item_abs, "scaffolds.fasta")
+                if os.path.exists(scaffolds):
+                    LOG.debug(f"Found {scaffolds}.")
+                    new_fasta_name = f"{os.path.basename(os.path.dirname(scaffolds))}.fasta"
+                    new_fasta_file = os.path.join(self.getFolder("out"), 
+                                                  new_fasta_name)
+                    self.addFastaFile(scaffolds)
+                    self._toolBelt.migrateFasta(scaffolds, new_fasta_file)
