@@ -108,7 +108,6 @@ def main():
     queries, hits = runTextSearch(handler, args)
     LOG.info(f"Found {queries} queries with {hits} hits.")
     
-    #I could make this a function but for now meh.
     if args.contigs and hits > 0:
         LOG.info("Getting contigs with hits...")
         handler.addFolder("contigs", args.contigs)

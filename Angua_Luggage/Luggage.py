@@ -5,13 +5,16 @@ Created on Fri May 19 15:51:33 2023
 @author: mwodring
 """
 
-import logging, os, re, subprocess
+import logging, os, re, subprocess, shutil
 import pandas as pd
 #TODO: have pandas do the csv in/out.
 import csv
 from collections import defaultdict
 
-from Bio import SeqIO, SearchIO
+from Bio import SeqIO, BioDeprecationWarning
+with warnings.catch_warnings():
+    warnings.simplefilter("ignore", BiopythonDeprecationWarning)
+    from Bio import SearchIO
 from Bio.SeqRecord import SeqRecord
 from Bio.Blast import NCBIXML
 import dataclasses 
@@ -66,6 +69,11 @@ class fileHandler:
         for dir_kind, dir_name in zip(dir_kinds, dir_names):
             self.extendFolder(orig_dir_kind, dir_kind, dir_name)
     
+    def removeFolder(self, dir_kind: str):
+        to_remove = self.getFolder(dir_kind)
+        if to_remove:
+            shutil.rmtree(to_remove)
+            
     def getFolder(self, dir_kind: str):
         try:
             return self._dirs[dir_kind]
@@ -110,7 +118,7 @@ class fileHandler:
             LOG.critical("No .fasta files in folder!")
         for fasta in fastas:
             self.addFastaFile(fasta)
-                             
+    
 class csvHandler():
     __slots__ = ("df_all", "header_df")
     def __init__(self, header_df: list):
@@ -159,8 +167,8 @@ class csvHandler():
         merged_df = pd.read_csv(csv_file, sep = ",")
         self.header_df = list(merged_df.columns).append("read_no")
         full_df = all_mapped_df.merge(merged_df, how = "outer")
-        test_csv_file = os.path.join(dir_name, "test_csv.csv")
-        full_df.to_csv(test_csv_file, index = False)
+        out_csv_file = os.path.join(dir_name, "all_samples.csv")
+        full_df.to_csv(out_csv_file, index = False, mode = "w")
     
     @staticmethod
     def outputHitsCSV(header, out_file: str, rows: list):
@@ -216,10 +224,14 @@ class toolBelt():
         new_tool = rmaTool(file, output, db, reads, blast_kind)
         self.tools["rma"].update({file : new_tool})
         return new_tool
-        
+    
+    def findHitContigNames(self):
+        for tool in self.getAllTools("blast"):
+            print(tool.hit)
+    
     def getTool(self, tool_kind: str, filename: str):
         return self.tools[toolkind][filename]
-        
+
     #To run a process on all tools of type in all files.
     def process_all(self, tool_kind: str, func: str, 
                     *args, **kwargs) -> Generator[callable]:
@@ -244,19 +256,22 @@ class toolBelt():
             LOG.info(f"{filename} written.")
                 
     #Note to self, write some functions to make this comprehension less Worse.            
-    def outputContigBySpecies(self, out_dir: str):
-        for filename in self.tools["fasta"]:
-            for species in self.getUniqueSpecies():
-                current_tools = [tool for tool in self.getToolsByName("fasta", filename) 
-                                 if tool.species == species]
-                out_file = os.path.join(out_dir, f"{species}_contigs.fasta")
-                with open(out_file, 'w+') as fa:
-                    for tool in current_tools:
-                        tool.output(fa)
+    def outputContigBySpecies(self, out_dir: str, extend = 0):
+        #This might need windows of some kind to avoid memory issues.
+        for species in self.getUniqueSpecies():
+            species_tools = [tool for tool in self.getAllTools("fasta") 
+                            if tool.species == species]
+            underscore_species = subSeqName(species)
+            for tool in species_tools:
+                sample_name = getSampleName(tool.filename, extend = extend)
+                out_file = os.path.join(out_dir, 
+                                        f"{sample_name}_{underscore_species}_contigs.fasta")
+                with open(out_file, "a") as fa:
+                    tool.output(fa)
     
     def migrateFasta(self, in_file: str, out_file: str):
         tools = self.tools["fasta"][in_file]
-        with open(out_file, "w+") as fa:
+        with open(out_file, "a") as fa:
             for tool in tools:
                 tool.output(fa)
     
@@ -293,6 +308,7 @@ class toolBelt():
         for i, tool in enumerate(self.tools["fasta"][filename]):
             seq_name = subSeqName(tool.seq.description)
             species = " ".join(tool.seq.description.split(" ")[1:])
+            print(species)
             tool.updateSpecies(species)
             tmp_file = os.path.join(tmp_dir, 
                                     f"{sample_name}_{seq_name}_tmp.fasta")
@@ -436,7 +452,7 @@ class blastTool(Tool):
     def parseICTVData(hit, query) -> tuple:
         hsp = hit.hsps[0]
         accession = hit.id
-        species = re.sub("[ :.,()/]", "_", hit.description)
+        species = hit.description
         ungapped = hsp.hit_span - hsp.gap_num
         coverage = getpercentage(hsp.hit_span,
                                  len(hsp.query.seq))

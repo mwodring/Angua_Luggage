@@ -30,7 +30,7 @@ def safeEntrez(db_type: str, rettype: str, id_list: list[str]):
                                id = set(id_list), 
                                rettype = rettype)
     except urllib.error.HTTPError:
-        LOG.error("Unable to find accession(s).")
+        LOG.error(f"Unable to find at least one accession in: {id_list}.")
         handle = None
     return handle
     

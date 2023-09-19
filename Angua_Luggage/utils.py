@@ -12,7 +12,7 @@ SearchParams = namedtuple("Search_Params",
                           "search_term,minlen,bitscore,blacklist")
 
 def subSeqName(to_sub: str):
-    seq_name = re.sub("[ :.,;()/]", "_", to_sub)
+    seq_name = re.sub("[ :.,;()/\>|]", "_", to_sub)
     return seq_name
 
 def Cleanup(folders: list | str, filetypes: list):

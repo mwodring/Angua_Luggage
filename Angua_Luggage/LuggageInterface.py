@@ -52,13 +52,13 @@ class blastParser(fileHandler):
                 LOG.info(f"No suitable hits for {filename}.")
     
     def hitContigsToFasta(self, by_species = False):
-        out_dir = os.path.join(self.getFolder("out"), "contigs")
         self.updateFastaInfo()
+        out_dir = os.path.join(self.getFolder("out"), "contigs")
         self.addFolder("parsed_contigs", out_dir)
         if not by_species:
-            self._toolBelt.outputContigsAll(out_dir = out_dir)
+            self._toolBelt.outputContigsAll(out_dir)
         else:
-            self._toolBelt.outputContigBySpecies(out_dir = out_dir)
+            self._toolBelt.outputContigBySpecies(out_dir, self.extend)
     
     def hitAccessionsToFasta(self, email: str, db_type="N"):
         db_type = "nuc" if db_type == "N" else "prot"
@@ -116,7 +116,7 @@ class blastParser(fileHandler):
                     outputSamHist(sorted_file, hist_file)
                     self.coverageToTSV(out_file, sample_name, seq_name)
                 #Just remove the folder - write a remove dir function.
-                os.remove(tmp_fa)
+        self.removeFolder("tmp")
         Cleanup(self.getFolder("acc"), [".amb", ".ann", ".bwt", ".pac", ".sa"])
         Cleanup(self.getFolder("bwa"), [".sam"])
         return tsv_files
@@ -133,6 +133,8 @@ class blastParser(fileHandler):
                       sample_name: str, seq_name: str) -> str:
         bwa_dir = os.path.dirname(bwa_file)
         num_mapped_reads = getNumMappedReads(bwa_file)
+        if num_mapped_reads == 0:
+            LOG.info(f"No reads mapped for {seq_name} to {sample_name}.")
         tsv_file = os.path.join(bwa_dir, 
                                 f"{sample_name}_{seq_name}.tsv")
         csvHandler.mappedReadsTSV(tsv_file, sample_name, seq_name, num_mapped_reads)
@@ -242,10 +244,10 @@ class rmaHandler(fileHandler):
     def blast2Rma(self, outdir, db, reads, blast_kind = "BlastN"):
         output = self.addFolder("megan", outdir)
         for file in self.getFolder("xml", ".xml"):
-            self.ToolBelt.runBlast2Rma(file, output, db, reads, blast_kind = blast_kind)
+            self._toolBelt.runBlast2Rma(file, output, db, reads, blast_kind = blast_kind)
     
     def getMeganReport(self):
-        self.ToolBelt.getMeganReports()
+        self._toolBelt.getMeganReports()
 
 class spadesTidy(fileHandler):
     def spadesToDir(self, out_dir: str):

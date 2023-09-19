@@ -143,10 +143,11 @@ class Angua(fileHandler):
 			exec_Angua.cluster(file, out_dir, perc, threads) 
 			# Remove and rename intermediate files
 			os.remove(os.path.join(out_dir, f"{file}_all_seqs.fasta"))
-			before_rep_seq, after_rep_seq = os.path.join(out_dir, 
-														 f"{file}_rep_seq.fasta"),
+			before_rep_seq, after_rep_seq = os.path.join(
+											out_dir, 
+											f"{file}_rep_seq.fasta"),
 											os.path.join(out_dir,
-														 f"{sample_name}_rep_seq.fasta")
+											f"{sample_name}_rep_seq.fasta")
 			os.rename(before_rep_seq, after_rep_seq)
 			before_tsv, after_tsv = os.path.join(out_dir,
 												 f"{file}_cluster.tsv"),
