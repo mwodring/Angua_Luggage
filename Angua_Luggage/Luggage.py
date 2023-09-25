@@ -11,7 +11,8 @@ import pandas as pd
 import csv
 from collections import defaultdict
 
-from Bio import SeqIO, BioDeprecationWarning
+from Bio import SeqIO, BiopythonDeprecationWarning
+import warnings
 with warnings.catch_warnings():
     warnings.simplefilter("ignore", BiopythonDeprecationWarning)
     from Bio import SearchIO
@@ -43,8 +44,7 @@ class fileHandler:
         self._resetFolders()
         self.addFolder(dir_kind, init_dir)
         self._toolBelt = toolBelt()
-        #Extend is the number of _ extensions. Defaults to 0 but can be used
-        #to start annotatr halfway through the Angua pipeline or after it etc.
+        #Extend is the number of _ after the sample name.
         self.extend = extend
     
     #Set folders to an empty dict.
@@ -374,22 +374,25 @@ class toolBelt():
     def blast2Rma(self, file, output, db, reads, blast_kind):
         self.addRmaTool(file, output, db, reads, blast_kind)
     
-    def getMeganReports(self, sortby: str, out_dir: str):
-        for rma in self.getAllTools("rma"):
-            unpacked = tool.Rma2Info(sortby)
-            add_txt_dict = rmaToolToFasta(unpacked, tool, sortby, out_dir) 
+    def getMeganReports(self, out_dir: str, sortby = "virus"):
+        for tool in self.getAllTools("rma"):
+            unpacked = tool.Rma2Info(sortby, out_dir)
+            print(unpacked)
+            self.rmaToolToFasta(unpacked, tool, sortby, out_dir)
                 
     def rmaToolToFasta(self, unpacked, tool, sortby, out_dir):
         filename = tool.filename
         sample = getSampleName(filename)
         if sortby == "contig":
             out_file =  os.path.join(out_dir, f"{sample}_rma_by_contig")
-            self.tools["fasta"]["filename"] = [fastaTool(ID = f"{contig}_{unpacked[contig][1]}", code = self._seq_dict[contig].seq) for contig in unpacked]
+            self.tools["fasta"]["filename"] = [fastaTool(ID = f"{contig}_{unpacked[contig][1]}", 
+                                               code = self._seq_dict[contig].seq) for contig in unpacked]
         elif sortby == "virus":
             for virus in unpacked:
                 virus_str = ("_").join(virus.split())
                 out_file = os.path.join(out_dir, f"{sample}_{virus_str}")
-                self.tools["fasta"][filename] = [fastaTool(ID = f"{contig}_{virus}", code = self._seq_dict[contig].seq) for contig in unpacked[virus]]
+                self.tools["fasta"][filename] = [fastaTool(ID = f"{contig}_{virus}", 
+                                                 code = self._seq_dict[contig].seq) for contig in unpacked[virus]]
                 virs = self.getAllTools(fasta)
                 with open("w+", out_file) as fa:
                     for tool in virs:
@@ -406,7 +409,7 @@ class Tool:
             LOG.error("No such function.")
         return func_to_call(*args, *kwargs)
 
-@dataclass
+@dataclass(slots=True)
 class fastaTool(Tool):
     seq: str | SeqRecord
     frame: int
@@ -430,7 +433,7 @@ class fastaTool(Tool):
         if(len(self.seq) >= int(min_len)):
             return self
             
-@dataclass
+@dataclass(slots=True)
 class blastTool(Tool):
     blast_type: str
     ictv: bool
@@ -603,12 +606,14 @@ class rmaTool():
         self.filename = os.path.join(output, rma_file)
         runBlast2Rma(file, output, db, reads, blast_kind)
         
-    def Rma2Info(self, sortby: str) -> dict:
-        file_no_extension = os.path.splitext(filename)[0]
-        self.rma_txt = file_no_extension + "_info"
+    def Rma2Info(self, sortby: str, out_dir: str) -> dict:
+        file_no_extension = os.path.splitext(self.filename)[0]
+        self.rma_txt = os.path.join(out_dir, 
+                                    f"{os.path.basename(file_no_extension)}_info.txt")
         runRma2Info(self.filename, self.rma_txt)
         if sortby == "contig":
             self.info_dict = self.sortByContig()
+            return self.info_dict
         elif sortby == "virus":
             self.info_dict = self.sortByVirus()
         else:
@@ -621,6 +626,8 @@ class rmaTool():
             for line in info.readlines():
                 contig_name, rank, *virus_name = line.split("\t")
                 virus_name = "_".join(virus_name).strip()
+                print(virus_name, "name")
+                print(rank, "rank")
                 virus_name = virus_name.replace(" ", "_")
                 info_dict[contig_name] = [rank, virus_name]
                 self._sorted = "contig"

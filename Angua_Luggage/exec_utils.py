@@ -93,4 +93,4 @@ def runBlast2Rma(file, outdir, db, reads, blast_kind = "BlastN"):
 def runRma2Info(filename, outfile):
     with open(outfile, "w") as output:
             subprocess.run(["rma2info", "--in", filename, "-vo", "-n", "-r2c", 
-                            "Taxonomy", "-r"], stdout = output)
+                            "Taxonomy", "-r", "-u", "false", "-v"], stdout = output)

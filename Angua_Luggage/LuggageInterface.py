@@ -241,13 +241,21 @@ class Annotatr(fileHandler):
                 if os.path.basename(file).startswith(sample)]
 
 class rmaHandler(fileHandler):
-    def blast2Rma(self, outdir, db, reads, blast_kind = "BlastN"):
-        output = self.addFolder("megan", outdir)
-        for file in self.getFolder("xml", ".xml"):
-            self._toolBelt.runBlast2Rma(file, output, db, reads, blast_kind = blast_kind)
+    def blast2Rma(self, db: str, blast_kind = "BlastN"):
+        output = self.addFolder("megan", self.getFolder("out"))
+        for file in self.getFiles("xml", ".xml"):
+            sample_name = getSampleName(file, extend = self.extend)
+            contig_tools = self._toolBelt.getToolsByName("fasta", sample_name)
+            contig_filename = contig_tools[0].filename
+            self._toolBelt.blast2Rma(file, 
+                                     self.getFolder("out"),
+                                     db, 
+                                     contig_filename, 
+                                     blast_kind = blast_kind)
     
-    def getMeganReport(self):
-        self._toolBelt.getMeganReports()
+    def getMeganReport(self, sortby = "virus"):
+        report_dir = self.extendFolder("out", "reports", "Reports")
+        self._toolBelt.getMeganReports(out_dir = report_dir)
 
 class spadesTidy(fileHandler):
     def spadesToDir(self, out_dir: str):
