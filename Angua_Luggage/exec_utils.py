@@ -1,7 +1,6 @@
 import subprocess, os, logging, pysam
 import urllib
 from subprocess import PIPE
-from .back_mapper import back_mapper
 from Bio import Entrez
 from shutil import move as shmove
 #TODO: Move the generation to fasta tool / fileHandler.
@@ -17,7 +16,7 @@ def fetchSRA(output_folder: str, accession: str):
     LOG.info(f"Fetching {accession}")
     #.strip is added due to trailing newlines.
     #https://blog.dalibo.com/2022/09/12/monitoring-python-subprocesses.html
-    cmd = ["fasterq-dump", "-S", "-O", output_folder, accession.strip()]
+    cmd = ["fasterq-dump", "--seq-defline", "@$sn[_$rn]/$ri", "-S", "-O", output_folder, accession.strip()]
     with subprocess.Popen(cmd, stdout= PIPE, stderr=subprocess.PIPE, text=True) as proc:
         errs = []
         for line in proc.stderr:
