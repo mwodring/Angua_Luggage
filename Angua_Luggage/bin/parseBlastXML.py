@@ -112,7 +112,7 @@ def main():
         LOG.info("Getting contigs with hits...")
         handler.addFolder("contigs", args.contigs)
         handler.findFastaFiles("contigs")
-        handler.hitContigsToFasta(by_species = True)
+        handler.hitContigsToFasta()
     
     if args.raw and not args.acc_to_fa:
         args.acc_to_fa == True

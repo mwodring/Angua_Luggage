@@ -10,6 +10,7 @@ from Bio import SeqIO
 from Bio.Blast import NCBIXML
 
 from .Luggage import fileHandler, toolBelt
+from .exec_utils import *
 
 #Doesn't use a file right this second but it will.
 logging.basicConfig(stream = sys.stdout)
@@ -47,7 +48,7 @@ class Angua(fileHandler):
 		self.extendFolderMultiple("QC", ["QC_trimmed_F", "QC_trimmed_M"],
 										["FastQC", "MultiQC"])
 		self.extendFolder("out", "trimmed", "Bbduk")
-		self.extendFolder("out", "trinity", "Trinity")
+		self.extendFolder("out", "assembly", options.assembler)
 		self.extendFolder("out", "contigs", "Contigs")
 		self.extendFolder("out", "clustered", "Mmseqs2")
 		self.extendFolder("out", "unmapped", "Unmapped")
@@ -99,14 +100,14 @@ class Angua(fileHandler):
 	#I can probably use a function to set up the _R2 files since this repeatd the above.
 	@optional_folders
 	def run_trinity(mem: str, threads: int,
-					trimmed_dir = "", trinity_dir = ""):
+					trimmed_dir = "", trinity_dir = "")y
 		for file_R1 in self.getFiles("trimmed", "_R1.fasta"):
 			file_R2 = file.replace("_R1", "_R2")
 			sample_name_R1 = getSampleName(file_R1)
 			sample_name_R2 = sample_name_R1.replace("_R1", "_R2")
 			
 			trimmed_dir, trinity_dir = self.getFolder("trimmed"), 
-								       self.getFolder("trinity")
+								       self.getFolder("assembly")
 			trinity_input_R1 = os.path.join(trimmed_dir, file)
 			trinity_input_R2 = os.path.join(trimmed_dir, file)
 			trinity_output = os.path.join(
@@ -135,7 +136,7 @@ class Angua(fileHandler):
 		if not self.getFolder(dir_kind):
 			dir_kind = "cluster-in"
 		if not self.getFolder("cluster"):
-			out_dir = self.extendFolder("out", "cluster", "Mmseqs2")
+			out_dir = self.extendFolder(dir_kind, "cluster", "Mmseqs2")
 		else:
 			out_dir = self.getFolder("cluster")
 		for file in self.getFiles(dir_kind):
@@ -151,16 +152,56 @@ class Angua(fileHandler):
 			os.rename(before_rep_seq, after_rep_seq)
 			before_tsv, after_tsv = os.path.join(out_dir,
 												 f"{file}_cluster.tsv"),
-									os.path.join(out_dir,
+												os.path.join(out_dir,
 												 f"{sample_name}_cluster.tsv")
 			os.rename(before_tsv, after_tsv)
 
 	# Remove the tmp dir
 	shutil.rmtree(f"{output_dir}/tmp/")
 
-	print("Clustering complete.")
+	LOG.info("Clustering complete.")
 		
-			
+	def get_unmapped(min_len: int, min_alignment_len: int, threads: int,
+					 trimmed_dir: ""):
+	for file in self.getFiles("trimmed", ".fasta"):
+		sample_name = getSampleName(file, extend=1)
+		self.extendFolder("out", "unmapped", "Unmapped")
+		current_bwa_dir = self.extendFolder("unmapped", "bwa_current", sample_name)
+		shutil.copy(file, current_bwa_dir)
+		input_file = os.path.join(current_bwa_dir, file)
+		sam_file = os.path.join(current_bwa_dir, f"{sample_name}_sort.sam"})
+
+		raw_reads = findRawBySample(sample_name)
+
+		# Index reference
+		runBwa(input_file, raw_reads, sam_file)
+
+		# BWA and samtools
+		sort_file = samToIndexedBam(in_sam = sam_file, 
+									out_sam = os.path.join(current_bwa_dir, 
+									f"{sample_name}.bam"))
+
+		# Pysam
+		reads_dir = self.extendFolder("unmapped", "reads_out", "Reads")
+		bamfile = pysam.AlignmentFile(sort_file, "rb")
+		with open(os.path.join(reads_dir, f"{sample_name}.fasta", "w") as outfile:
+			for read in bamfile.fetch(until_eof = True):
+				try:
+					if read.query_alignment_length >= (int(read.infer_read_length()) / 3):
+						if read.query_alignment_length >= int(min_alignment_len):
+							good += 1
+						else:
+							outfile.write(f">{read.query_name}\n")
+							outfile.write(f"{read.query_sequence}\n")
+					else:
+						outfile.write(f">{read.query_name}\n")
+						outfile.write(f"{read.query_sequence}\n")
+				except:
+					outfile.write(f">{read.query_name}\n")
+					outfile.write(f"{read.query_sequence}\n")
+
+		# Close file
+		bamfile.close()
 		
 def main():
 	angua_version = 3
@@ -169,26 +210,35 @@ def main():
 	### Main Pipeline
 	if(sys.argv[1] == "main"):
 		angua = Angua("out", options.output)
-		if options.qc:
+		if not options.no_qc:
 			angua.pre_qc_checks(options.qc_threads, raw_dir = options.in_dir)
-		run_bbduk(options.bbduk_minl, options.bbduk_adapters, options.bbduk_q
-				  raw_dir = options.in_dir)
-		if options.qc == "Y":
-			angua.post_qc_checks(options.qc_threads)
-		if options.trinity == "Y":
-			angua.run_trinity(options.trinity_mem, options.trinity_cpu)
-		if options.sort == "Y":
-			angua.sort_fasta_by_length(200)
-			angua.sort_fasta_by_length(1000)
-			if options.cluster == "Y":
-				angua.cluster_fasta("sorted_1000", options.cluster_perc, options.cluster_threads)
-		if options.unmapped == "Y":
-			get_unmapped(f"{options.output}/Contigs/200/", f"{options.output}/Bbduk/", f"{options.output}/Unmapped/", options.bwa_threads, options.min_alignment)
-			cluster_fasta(f"{options.output}/Unmapped/Reads/", f"{options.output}/Unmapped/Mmseqs2/", options.cluster_perc, options.cluster_threads)
+		
+		if options.bbduk_adapters:
+			run_bbduk(options.bbduk_minl, options.bbduk_adapters, options.bbduk_q
+					  raw_dir = options.in_dir)
+			if not options.no_qc:
+				angua.post_qc_checks(options.qc_threads)
+		
+		if options.assembler:
+			if options.assembler.upper() == "TRINITY":
+				angua.run_trinity(options.trinity_mem, options.trinity_cpu)
+		
+		if not options.sort:
+			options.sort = [200, 1000]
+		
+		for num in options.sort:
+			angua.sort_fasta_by_length(num)
+		
+		if options.cluster:
+			angua.cluster_fasta(f"sorted_{max(options.sort)}", options.cluster_perc, options.cluster_threads)
+		
+		if options.unmapped:
+			angua.get_unmapped(max(options.sort), options.bwa_threads, options.min_alignment)
+			angua.cluster_fasta("reads_out", options.cluster_perc, options.cluster_threads)
 			blastn_unmapped = Blast(f"{options.output}/Unmapped/Mmseqs2/", f"{options.output}/Unmapped/Blastn/", "blastn", options.blast_pool, "blastn", "megablast", options.ictv_db, options.blastn_threads, options.blast_descriptions, options.blast_alignments, "qualified", ".fasta")
 			blastn_unmapped.run_blast_parallel()
 			text_search(f"{options.output}/Unmapped/Blastn/", f"{options.output}/Results/", "Unmapped_reads_viruses", "", options.min_alignment)
-		if options.blastn == "Y":
+		if options.nt_db:
 			blastn = Blast(f"{options.output}/Contigs/200/", f"{options.output}/Blastn/", "blastn", options.blast_pool, "blastn", "megablast", options.nt_db, options.blastn_threads, options.blast_descriptions, options.blast_alignments, "single", ".fasta")
 			blastn.run_blast_parallel()
 		if options.megan_blastn == "Y":
@@ -239,51 +289,6 @@ def main():
 		if options.text_searcher == "Y":
 			text_search(options.input, f"{options.output}/Text-Searcher/", options.output_filename ,options.search_term, options.min_alignment)
 			
-################################################################################
-def get_unmapped(input_assembly_dir, input_reads_dir, output_dir, min_alignment_len, threads):
-	
-	input_files = looper(input_assembly_dir, "single", ".fasta")
-
-	for file in input_files:
-		sample_name = file.split("_sorted")[0]
-
-		Path(f"{output_dir}/BWA/", sample_name).mkdir(exist_ok = True, parents = True)
-		subprocess.call(f"cp {input_assembly_dir}/{file} {output_dir}/BWA/{sample_name}/{file}", shell = True)
-		input_file = f"{output_dir}/BWA/{sample_name}/{file}"
-
-		r1_in = f"{input_reads_dir}/{sample_name}_R1.fastq.gz"
-		r2_in = f"{input_reads_dir}/{sample_name}_R2.fastq.gz"
-
-		# Index reference
-		subprocess.call(f"bwa-mem2 index {input_file}", shell = True)
-
-		# BWA and samtools
-		subprocess.call(f"bwa-mem2 mem -t {threads} {input_file} {r1_in} {r2_in} > {output_dir}/BWA/{sample_name}/{sample_name}.sam", shell = True)
-		subprocess.call(f"samtools view -q 0 -F 2304 -bS {output_dir}/BWA/{sample_name}/{sample_name}.sam > {output_dir}/BWA/{sample_name}/{sample_name}.bam", shell = True)
-		subprocess.call(f"samtools sort {output_dir}/BWA/{sample_name}/{sample_name}.bam > {output_dir}/BWA/{sample_name}/{sample_name}_sort.bam", shell = True)
-		subprocess.call(f"samtools index {output_dir}/BWA/{sample_name}/{sample_name}_sort.bam", shell = True)
-
-		# Pysam
-		bamfile = pysam.AlignmentFile(f"{output_dir}/BWA/{sample_name}/{sample_name}_sort.bam", "rb")
-		with open(f"{output_dir}/Reads/{sample_name}.fasta", "w") as outfile:
-			for read in bamfile.fetch(until_eof = True):
-				try:
-					if read.query_alignment_length >= (int(read.infer_read_length()) / 3):
-						if read.query_alignment_length >= int(min_alignment_len):
-							good += 1
-						else:
-							outfile.write(f">{read.query_name}\n")
-							outfile.write(f"{read.query_sequence}\n")
-					else:
-						outfile.write(f">{read.query_name}\n")
-						outfile.write(f"{read.query_sequence}\n")
-				except:
-					outfile.write(f">{read.query_name}\n")
-					outfile.write(f"{read.query_sequence}\n")
-
-		# Close file
-		bamfile.close()
-
 ################################################################################
 def run_megan(input_dir, output_dir, mode, reads, a2t):
 
@@ -384,73 +389,6 @@ def back_mapper(input_dir, output_dir, reference, threads, delim, mapq, flag, co
 	print("Back mapping completed.")
 
 ################################################################################
-def text_search(input_dir, output_dir, output_filename, search_term, min_alignment_len):
-
-	input_files = looper(input_dir, "qualified", ".xml")
-
-	all_virus_dict = {}
-	for file in input_files:
-		input_file = f"{input_dir}/{file}"
-		sample_ID = file.split(".")[0]
-
-		with open(input_file) as xml_in:
-			blast_records = NCBIXML.parse(xml_in)
-
-			virus_dict = {}
-			for record in blast_records:
-				for alignment in record.alignments:
-					if search_term in alignment.hit_def.upper():
-
-						# Check alignment length is not shorter than 1/3 of the query length
-						if len(alignment.hsps[0].match) >= (record.query_length / 3):
-							# Check the alignment length is not shorter than 50nts
-							if len(alignment.hsps[0].match) >= int(min_alignment_len):
-
-								# Assign variables
-								hit = alignment.hit_def
-								pid = alignment.hsps[0].identities / len(alignment.hsps[0].match) * 100
-								bitscore = alignment.hsps[0].bits
-								coverage = len(alignment.hsps[0].match) / record.query_length * 100
-								alignment_len = len(alignment.hsps[0].match)
-								query_len = record.query_length
-								aligned_seq = alignment.hsps[0].query
-
-								blast_vars = (hit, pid, bitscore, coverage, alignment_len, query_len, aligned_seq)
-
-								# Add hit to dict
-								if record.query in virus_dict:
-									if alignment.hsps[0].bits >= list(virus_dict[record.query].items())[0][1][2] * 0.9:
-										virus_dict[record.query][alignment.hit_id] = []
-
-										# Append to dict
-										for i in blast_vars:
-											virus_dict[record.query][alignment.hit_id].append(i)
-
-								else:
-									virus_dict[record.query] = {}
-									virus_dict[record.query][alignment.hit_id] = []
-
-									# Append to dict
-									for i in blast_vars:
-										virus_dict[record.query][alignment.hit_id].append(i)
-
-			all_virus_dict[sample_ID] = virus_dict
-
-	# Write output
-	with open(f"{output_dir}/{output_filename}.tsv", "w") as unmapped_out:
-		unmapped_out.write("Sample	Read_ID	Database_hit	Percentage_identity	Coverage	Query_length	Aligned_sequence\n")
-		for sample in all_virus_dict:
-			for read in all_virus_dict[sample]:
-				for hit in all_virus_dict[sample][read]:
-					taxa = all_virus_dict[sample][read][hit][0]
-					pid = all_virus_dict[sample][read][hit][1]
-					cov = all_virus_dict[sample][read][hit][3]
-					query_len = all_virus_dict[sample][read][hit][5]
-					aligned_seq = all_virus_dict[sample][read][hit][6]
-
-					unmapped_out.write(f"{sample}	{read}	{taxa}	{pid}	{cov}	{query_len}	{aligned_seq}\n")
-
-################################################################################
 def stats(input_raw_stats, input_trimmed_stats, qualifier, normalised_reads_dir, output_dir):
 
 	sample_dict = {}
@@ -519,178 +457,173 @@ def document_env(script_name, script_version, output_dir, input_params):
 	subprocess.call(f"conda list > {output_dir}/{script_name}_env.txt", shell = True)
 
 ################################################################################
-class Blast:
-	def __init__(
-		self,
-		input_dir,
-		output_dir,
-		mode,
-		blast_pool,
-		blast_type,
-		blast_task,
-		database_path,
-		threads,
-		descriptions,
-		alignments,
-		loop_mode,
-		loop_qualifier
-	):
-		self.input_dir = input_dir
-		self.output_dir = output_dir
-		self.mode = mode
-		self.blast_pool = blast_pool
-		self.blast_type = blast_type
-		self.blast_task = blast_task
-		self.database_path = database_path
-		self.threads = threads
-		self.descriptions = descriptions
-		self.alignments = alignments
-		self.loop_mode = loop_mode
-		self.loop_qualifier = loop_qualifier
-
-	############################################################################
-	def run_blast_parallel(self):
-
-		input_files = looper(self.input_dir, self.loop_mode, self.loop_qualifier)
-
-		# Get pool size
-		pool = multiprocessing.Pool(processes = 1)
-		if self.mode == "blastn":
-			pool = multiprocessing.Pool(processes = int(self.blast_pool))
-		elif self.mode == "blastx":
-			pool = multiprocessing.Pool(processes = 1)
-
-		results = [
-			pool.apply_async(self.blast_query, args = (f"{self.input_dir}/{file}", f"{self.output_dir}/{file.split('.')[0]}.{self.blast_task}.xml")
-			)
-			for file in input_files
-		]
-
-		for p in results:
-			p.get()
-
-	############################################################################
-	def blast_query(self, input_file, output_file):
-
-		# Blast query
-		blast = (
-			f"{self.blast_type} "
-			f"-task {self.blast_task} "
-			f"-db {self.database_path} "
-			f"-query {input_file} "
-			f"-num_threads {self.threads} "
-			f"-num_descriptions {self.descriptions} "
-			f"-num_alignments {self.alignments} "
-			f"-outfmt 5 "
-			f"-out {output_file}"
-		)
-
-		# Run blast query
-		blast_child = subprocess.Popen(
-			str(blast),
-			stdout = subprocess.PIPE,
-			stderr = subprocess.PIPE,
-			universal_newlines = True,
-			shell = (sys.platform != "win32")
-		)
-
-		blast_output, blast_error = blast_child.communicate()
-
-		print(f'Blast complete for query: {input_file.split("/")[-1]}')
 
 ################################################################################
 def parse_arguments():
-	parser = argparse.ArgumentParser(prog = "Angua", description = "Runs the Angua pipeline.")
+	parser = argparse.ArgumentParser(prog = "Angua", 
+									 description = "Runs the Angua pipeline.")
 	subparsers = parser.add_subparsers(help = "sub-command help")
-	main = subparsers.add_parser("main", help = "Runs the Angua pipeline.")
-	taxa_finder = subparsers.add_parser("taxa-finder", help = "Runs the taxa-finder pipeline. Requires a HMM file and directory of fasta files. nhmmer > bedtools")
-	back_mapper = subparsers.add_parser("back-mapper", help = "Runs the back-mapper pipeline. bwa-mem2 > samtools > bamtocov")
-	text_searcher = subparsers.add_parser("text-searcher", help = "Runs the taxa-finder pipeline. Searches xml files for search terms.")
+	main = subparsers.add_parser("main", 
+								 help = "Runs the Angua pipeline.")
+	taxa_finder = subparsers.add_parser("taxa-finder", 
+										help = "Runs the taxa-finder pipeline. Requires a HMM file and directory of fasta files. nhmmer > bedtools")
+	back_mapper = subparsers.add_parser("back-mapper", 
+										help = "Runs the back-mapper pipeline. bwa-mem2 > samtools > bamtocov")
 
 	################################################################################
 	### Main Pipeline
 
 	# Key arguments
-	main.add_argument("--input", help = "This is the location of the raw data directory.", required = True)
-	main.add_argument("--output", help = "This is where the output data will be generated.", required = True)
-
-	main.add_argument("--nt_db", help = "This is the path to the nt database.", default = "/data/bigbio_00/smcgreig/Blast_databases/nt/nt_db_28012022/nt")
-	main.add_argument("--nr_db", help = "This is the path to the nr database.", default = "/data/bigbio_00/smcgreig/Blast_databases/nr/nr_db_27012022/nr")
-	main.add_argument("--ictv_db", help = "This is the path to the ictv database.", default = "/data/bigbio_00/smcgreig/Blast_databases/ICTV/ICTV_viruses")
-	main.add_argument("--megan_na2t", help = "This is the path to the megan nucl_acc2tax file.", default = "/home/smcgreig/miniconda2/envs/Angua3/opt/megan-6.12.3/megan-nucl-Jan201.db")
-	main.add_argument("--megan_pa2t", help = "This is the path to the megan prot_acc2tax file.", default = "/home/smcgreig/miniconda2/envs/Angua3/opt/megan-6.12.3/megan-map-Jan2021.db")
+	main.add_argument("--input", 
+					  help = "Path to raw data directory.", required = True)
+	main.add_argument("--output", 
+					  help = "Directory where output data will be generated.", required = True)
+	main.add_argument("--nt_db", 
+					  help = "Path to the nt database.")
+	main.add_argument("--nr_db", 
+					 help = "Path to the nr database.")
+	main.add_argument("--ictv_db", 
+					  help = "Path to the ICTV nucleotide database generated by makeICTVDB.")
+	
+	main.add_argument("-mn2t", "--megan_na2t", 
+					  help = "Path to the megan nucl_acc2tax file.")
+	main.add_argument("-mp2t", "--megan_pa2t", 
+					  help = "Path to the megan prot_acc2tax file.")
 
 	# Extra arguments, useful for if a specific job has failed and you don't want to start from scratch
 
-	main.add_argument("--create_dirs", help = "Creates the directory structure. Default Y.", choices = ["Y", "N"], default = "Y")
-	main.add_argument("--bbduk", help = "Runs bbduk. Default Y.", choices = ["Y", "N"], default = "Y")
-	main.add_argument("--qc", help = "Runs fastQC and multiQC before and after trimming. Default Y.", choices = ["Y", "N"], default = "Y")
-	main.add_argument("--trinity", help = "Run trinity. Default Y.", choices = ["Y", "N"], default = "Y")
-	main.add_argument("--sort", help = "Sort contigs, based on length, into >=200 and >=1000. Default Y.", choices = ["Y", "N"], default = "Y")
-	main.add_argument("--cluster", help = "Clusters contigs >= 1000. Default Y.", choices = ["Y", "N"], default = "Y")
-	main.add_argument("--unmapped", help = "Extracts unmapped and weak alignments, and looks for viruses", choices = ["Y", "N"], default = "Y")
-	main.add_argument("--blastn", help = "Run blastn. Default Y.", choices = ["Y", "N"], default = "Y")
-	main.add_argument("--blastx", help = "Run blastx. Default Y.", choices = ["Y", "N"], default = "Y")
-	main.add_argument("--megan_blastn", help = "Run megan for blastn. Default Y.", choices = ["Y", "N"], default = "Y")
-	main.add_argument("--megan_blastx", help = "Run megan for blastx. Default Y.", choices = ["Y", "N"], default = "Y")
-	main.add_argument("--stats", help = "Generate read stats and results template. Default Y.", choices = ["Y", "N"], default = "Y")
-	main.add_argument("--doc_env", help = "Creates environment and parameter details. Default Y.", choices = ["Y", "N"], default = "Y")
+	main.add_argument("-nodir", "--create_dirs_off", 
+					  help = "Suppress creating directory structure.",
+					  action = "store_true")
+	main.add_argument("--noqc", 
+					  help = "Do not run FastQC and MultiQC.",
+					  action = "store_true")
+	main.add_argument("-a", "--assembler", 
+					  help = "Choice of assembler. 'N' skips assembly.", 
+					  choices = ["trinity"]
+					  default = "trinity")
+	main.add_argument("-s", "--sort",
+					  help = "Bins to sort contigs into. The highest will be used for Blastx, and the rest for Blastn, if these flags are set. Defaults to 200 and 1000."
+					  nargs = "*",
+					  type = int)
+	main.add_argument("--cluster", 
+					  help = "Clusters the highest bin before Blastx.",
+					  action = "store_true")
+	main.add_argument("-um", "--unmapped", 
+					  help = "Extract unmapped and weak alignments, and looks for viruses.", 
+					  action = "store_true")
+
+	main.add_argument("-ns", "--no_stats", 
+					 help = "Do not generate read stats and results template.",
+					 action = "store_true")
+	main.add_argument("-nde", "--no_doc_env", 
+					  help = "Do not log environment and parameter details."
+					  action = "store_true")
 
 	# Tool specific parameters
 
 	# FastQc and MultiQC
-	main.add_argument("--qc_threads", help = "The number of threads to use to generate QC plots. Default round(0.9*total threads).", default = round(os.cpu_count() * 0.9))
+	main.add_argument("-qct", "--qc_threads", 
+					  help = "Number of threads to use to generate QC plots. Default round(0.9*total threads).", 
+					  default = round(os.cpu_count() * 0.9))
 
 	# Bbduk
-	main.add_argument("--bbduk_adapters", help = "Bbduk adapter references.", default = "/home/smcgreig/Scripts/Angua_test/RNA_adapters.fasta")
-	main.add_argument("--bbduk_q", help = "Bbduk phred quality trim parameter. Default 10", default = 10)
-	main.add_argument("--bbduk_minl", help = "Bbduk minimum length. Default 50", default = 50)
+	main.add_argument("-bba", "--bbduk_adapters", 
+					  help = "Bbduk adapter references.")
+	main.add_argument("-bbq", "--bbduk_q", 
+					  help = "Bbduk phred quality trim parameter. Default 10", 
+					  default = 10)
+	main.add_argument("-bbml", "--bbduk_minl", 
+					  help = "Bbduk minimum length. Default 50", 
+					  default = 50)
 
 	# Trinity
-	main.add_argument("--trinity_cpu", help = "Trinity CPU parameter. Default 60.", default = 60)
-	main.add_argument("--trinity_mem", help = "Trinity max memory parameter. Default 200G", default = "200G")
+	main.add_argument("-tcpu", "--trinity_cpu", 
+					  help = "Trinity CPU parameter. Default 60.", 
+					  default = 60)
+	main.add_argument("-tmem", "--trinity_mem", 
+					  help = "Trinity max memory parameter. Default 200G", 
+					  default = "200G")
 
 	# MMseq2
-	main.add_argument("--cluster_perc", help = "What percentage identity to cluster at. Default 0.95.", default = 0.95)
-	main.add_argument("--cluster_threads", help = "Number of threads to run mmseq2 with. Default round(0.9*total threads).", default = round(os.cpu_count() * 0.9))
+	main.add_argument("-clp", "--cluster_perc", 
+					  help = "What percentage identity to cluster at. Default 0.95.", default = 0.95)
+	main.add_argument("-clt", "--cluster_threads", 
+					  help = "Number of threads to run mmseq2 with. Default round(0.9*total threads).", 
+					  default = round(os.cpu_count() * 0.9))
 
 	# Unmapped
-	main.add_argument("--bwa_threads", help = "The number of threads to use with BWA. Default round(0.9*total threads).", default = round(os.cpu_count() * 0.9))
-	main.add_argument("--min_alignment", help = "The minimum alignment length for a 'good' alignment. Default 50.", default = 50)
+	main.add_argument("-bwt", "--bwa_threads", 
+					  help = "Number of threads to use with BWA. Default round(0.9*total threads).", 
+					  default = round(os.cpu_count() * 0.9))
+	main.add_argument("-mina", "--min_alignment", 
+					  help = "Minimum alignment length for a 'good' alignment. Default 50.", 
+					  default = 50)
 
 	# Blast
-	main.add_argument("--blast_pool", help = "This is the maximum number of blast processes allowed in the pool at any one time. Default 8.", default = 8)
-	main.add_argument("--blastn_threads", help = "This is the number of threads used for each blastn process. Default 16.", default = 16)
-	main.add_argument("--blastx_threads", help = "This is the number of threads used for running blastx. Default 130.", default = 130)
-	main.add_argument("--blast_descriptions", help = "This is the number of descriptions shown. Default 25.", default = 25)
-	main.add_argument("--blast_alignments", help = "This is the number of alignments shown. Default 25.", default = 25)
+	main.add_argument("-blp", "--blast_pool", 
+					  help = "TMaximum number of blast processes allowed in the pool at any one time. Default 8.",
+					  default = 8)
+	main.add_argument("blt", "--blastn_threads", 
+					  help = "Number of threads used for each blastn process. Default 16.", 
+					  default = 16)
+	main.add_argument("-blxt", "--blastx_threads", 
+					  help = "Number of threads used for running blastx. Default 130.", 
+					  default = 130)
+	main.add_argument("-bld", "--blast_descriptions", 
+					  help = "Number of descriptions shown. Default 25.", 
+					  default = 25)
+	main.add_argument("-bla", "--blast_alignments", 
+					  help = "Number of alignments shown. Default 25.", 
+					  default = 25)
 
 	################################################################################
 	### Taxa-finder Pipeline
 
 	# Key arguments
-	taxa_finder.add_argument("--input", help = "This is the location of the contig directory.", required = True)
-	taxa_finder.add_argument("--output", help = "This is the location of the output directory.", required = True)
-	taxa_finder.add_argument("--hmm", help = "This is the location of input hmm file. Default /biostore/bigbio_00/smcgreig/rbcL_databases/rbcl_hmm/rbcl.hmm", default = "/biostore/bigbio_00/smcgreig/rbcL_databases/rbcl_hmm/rbcl.hmm")
+	taxa_finder.add_argument("--input", 
+							 help = "Location of the contig directory.", 
+							 required = True)
+	taxa_finder.add_argument("--output", 
+							help = "Location of the output directory.", 
+							 required = True)
+	taxa_finder.add_argument("--hmm", 
+							 help = "Location of input hmm file.",
+							 required = True)
 
-	taxa_finder.add_argument("--create_dirs", help = "Creates the directory structure. Default Y.", choices = ["Y", "N"], default = "Y")
-	taxa_finder.add_argument("--find_taxa", help = "Runs the specified HMM and extracts fasta files. Default Y.", choices = ["Y", "N"], default = "Y")
+	taxa_finder.add_argument("-nodir", "--create_dirs_off", 
+							 help = "Suppress creation of directory structure.", 
+							 action = "store_true")
+	taxa_finder.add_argument("--find_taxa", 
+							 help = "Runs the specified HMM and extracts fasta files. Default true.",
+							 action = "store_true")
 
 	# Tool specific parameters
 
-	taxa_finder.add_argument("--hmm_min_length", help = "Determine the minimum size for a sequence to be retrieved from the HMM search. Default 500.", default = 500)
+	taxa_finder.add_argument("--hmm_min_length", 
+							 help = "Determine the minimum size for a sequence to be retrieved from the HMM search. Default 500.", 
+							 default = 500)
 
 	################################################################################
 	### Back-Mapper Pipeline
 
 	# Key arguments
-	back_mapper.add_argument("--input", help = "This is the location of the input directory.", required = True)
-	back_mapper.add_argument("--output", help = "This is the location of the output directory.", required = True)
-	back_mapper.add_argument("--reference", help = "This is the location of reference fasta file.", required = True)
+	back_mapper.add_argument("--input", 
+							help = "Location of the input directory.", 
+							required = True)
+	back_mapper.add_argument("--output", 
+							 help = "Location of the output directory.", 
+							 required = True)
+	back_mapper.add_argument("--reference", 
+							 help = "Location of reference fasta file.", 
+							 required = True)
 
-	back_mapper.add_argument("--create_dirs", help = "Creates the directory structure. Default Y.", choices = ["Y", "N"], default = "Y")
-	back_mapper.add_argument("--back_mapper", help = "Runs bwa and samtools. Default Y.", choices = ["Y", "N"], default = "Y")
-	back_mapper.add_argument("--coverage", help = "Generate coverage output. Default Y.", choices = ["Y", "N"], default = "Y")
+	back_mapper.add_argument("-nodir", "--create_dirs_off", 
+							 help = "Suppress creation of directory structure.", 
+							 action = "store_true")
+	back_mapper.add_argument("-nocov", "--no_coverage", 
+							 help = "Suppress generating coverage output.", 
+							 action = "store_true")
 
 	# Extra arguments
 	back_mapper.add_argument("--threads", help = "Number of threads to use. Default is 23.", default = round(os.cpu_count() * 0.9))
@@ -699,21 +632,6 @@ def parse_arguments():
 	back_mapper.add_argument("--flag", help = "Filter reads with the specified samflag. Default is 2304", default = 2304)
 
 	################################################################################
-	### Text-Search Pipeline
-
-	# Key arguments
-	text_searcher.add_argument("--input", help = "This is the location of the input directory.", required = True)
-	text_searcher.add_argument("--output", help = "This is the location of the output directory.", required = True)
-	text_searcher.add_argument("--search_term", help = "Term to search for. Default VIRUS.", default = "VIRUS")
-
-	text_searcher.add_argument("--create_dirs", help = "Creates the directory structure. Default Y.", choices = ["Y", "N"], default = "Y")
-	text_searcher.add_argument("--text_searcher", help = "Inspects blast XML files for a specified search term. Default Y.", choices = ["Y", "N"], default = "Y")
-
-	# Extra arguments
-	text_searcher.add_argument("--min_alignment", help = "The minimum alignment length for a 'good' alignment. Default 50.", default = 50)
-	text_searcher.add_argument("--output_filename", help = "The output filename. Default Blastn_text_search.", default = "Blastn_text_search")
-	
-	
 	return parser.parse_args()
 
 ################################################################################

@@ -1,6 +1,9 @@
 from .parseBlastXML import getTerms
 from ..LuggageInterface import rmaHandler
-import argparse
+import argparse, logging, sys
+
+logging.basicConfig(stream = sys.stdout, level=logging.DEBUG)
+LOG = logging.getLogger(__name__)
 
 def parseArguments():
     parser = argparse.ArgumentParser(description = "Runs Megan on .xml files and generates a report.")
@@ -35,23 +38,33 @@ def parseArguments():
     parser.add_argument("-ex", "--extend",
                         help = "Number of underscores to remove from sample names.",
                         type = int, default = 1)
+    parser.add_argument("-co", "--contigsout",
+                        help = "Output contigs matching virus species. Default false.",
+                        action = "store_true")
     return parser.parse_args()
 
 def main():
     args = parseArguments()
+    
     handler = rmaHandler("out", args.out_dir, extend = args.extend)
+    handler.addFolder("contigs", args.contigs)
+    handler.findFastaFiles("contigs")
+    blast_kind = "Blast" + args.blast_type.upper()
+    
     if args.runmegan:
         handler.addFolder("xml", args.in_dir)
-        blast_kind = "Blast" + args.blast_type.upper()
-        handler.addFolder("contigs", args.contigs)
-        handler.findFastaFiles("contigs")
         handler.blast2Rma(db = args.a2t, blast_kind = blast_kind)
     else:
         handler.addFolder("megan", args.in_dir)
+        handler.findRmas(db = args.a2t)
     
+    header = ["sample", "contig", "rank", "species"]
     handler.getMeganReport()
-
-	#Hook into the existing csv stuff and continue from there.
+    handler.hitsToCSV(header)
+    handler.mergeCSVOutput(header)
+    
+    if args.contigsout:
+        handler.hitContigsToFasta()
 	
 if __name__ == "__main__":
     sys.exit(main())

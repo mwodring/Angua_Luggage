@@ -31,6 +31,7 @@ setup(
         "parseBlast = Angua_Luggage.bin.parseBlastXML:main",
         "annotatr = Angua_Luggage.bin.getORFs:main",
         "spadesTidy = Angua_Luggage.bin.spadesTidy:main",
-        "parseMegan = Angua_Luggage.bin.parseBlastMegan:main"]
+        "parseMegan = Angua_Luggage.bin.parseBlastMegan:main",
+        "fetchSRA = Angua_Luggage.bin.fetchSRA:main"]
         }
 )

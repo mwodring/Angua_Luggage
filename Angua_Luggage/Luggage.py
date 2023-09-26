@@ -100,6 +100,13 @@ class fileHandler:
                                     ID = ID, 
                                     species = species)
     
+    def findFastaBySample(self, sample_name: str, dir_kind: str):
+        files = []
+        for file in self.getFiles(dir_kind, [".fasta", ".fq", ".fq.gz"]):
+            if sample_name in file:
+                files.append(file)
+        return files
+    
     #Simple but it's a function in case it later wants validation.
     def addBlast(self, filename: str, ictv = False, blast_type = "Blastn"):
         self._toolBelt.addBlastTool(filename, blast_type, ictv)
@@ -149,8 +156,13 @@ class csvHandler():
         self.df_all.append(tmp_df)
      
     def mergeCSVOutput(self, dir_name: str) -> str:
-        df_merged = pd.concat(self.df_all)
-        self.header_df.append("sample")
+        try:
+            df_merged = pd.concat(self.df_all)
+        except ValueError:
+            LOG.warn("No suitable hits found in any file; no csv to output.")
+            return
+        if not "sample" in self.header_df:
+            self.header_df.append("sample")
         df_merged.columns = self.header_df
         all_csv = os.path.join(dir_name, "all_samples.csv")
         df_merged.to_csv(all_csv, index = False)
@@ -220,8 +232,10 @@ class toolBelt():
         self.tools["pfam"].update({filename : new_tool})
         return new_tool
     
-    def addRmaTool(self, file, output, db, reads, blast_kind):
-        new_tool = rmaTool(file, output, db, reads, blast_kind)
+    def addRmaTool(self, file: str, output: str, db: str, contigs: str, 
+                         sample_name: str, blast_kind = ""):
+        new_tool = rmaTool(file, output, db, contigs, sample_name, 
+                           blast_kind = blast_kind)
         self.tools["rma"].update({file : new_tool})
         return new_tool
     
@@ -308,7 +322,6 @@ class toolBelt():
         for i, tool in enumerate(self.tools["fasta"][filename]):
             seq_name = subSeqName(tool.seq.description)
             species = " ".join(tool.seq.description.split(" ")[1:])
-            print(species)
             tool.updateSpecies(species)
             tmp_file = os.path.join(tmp_dir, 
                                     f"{sample_name}_{seq_name}_tmp.fasta")
@@ -318,12 +331,12 @@ class toolBelt():
                 tool.output(fa)
         return seq_names, tmp_fas
     
-    def getHitsCSVInfo(self) -> Generator[str, list]:
-        for filename, tool in self.tools["blast"].items():
+    def getHitsCSVInfo(self, tool_kind = "blast") -> Generator[str, list]:
+        for filename, tool in self.tools[tool_kind].items():
             yield filename, tool.getHitCSVInfo()
     
-    def getUniqueSpecies(self) -> set:
-        species = [tool.species for tool in self.getAllTools("fasta")]
+    def getUniqueSpecies(self, tool_kind = "fasta") -> set:
+        species = [tool.species for tool in self.getAllTools(tool_kind)]
         return set(species)
     
     #TODO: CHeck where yield from and generator returns are more appropriate.
@@ -371,32 +384,19 @@ class toolBelt():
         if on == "len":
             self.sortFastaOnLen(in_fa, out_fa, flt)
     
-    def blast2Rma(self, file, output, db, reads, blast_kind):
-        self.addRmaTool(file, output, db, reads, blast_kind)
+    def blast2Rma(self, file: str, output: str, db: str, contigs: str, 
+                        blast_kind: str, sample_name: str):
+        self.addRmaTool(file, output, db, contigs, sample_name,
+                        blast_kind = blast_kind)
     
+    def mapFastaToRma(self):
+        for tool in self.getAllTools("rma"):
+            for c, taxon in tool.contig_to_taxon.items():
+                self.labelFasta(c, taxon[1])
+            
     def getMeganReports(self, out_dir: str, sortby = "virus"):
         for tool in self.getAllTools("rma"):
-            unpacked = tool.Rma2Info(sortby, out_dir)
-            print(unpacked)
-            self.rmaToolToFasta(unpacked, tool, sortby, out_dir)
-                
-    def rmaToolToFasta(self, unpacked, tool, sortby, out_dir):
-        filename = tool.filename
-        sample = getSampleName(filename)
-        if sortby == "contig":
-            out_file =  os.path.join(out_dir, f"{sample}_rma_by_contig")
-            self.tools["fasta"]["filename"] = [fastaTool(ID = f"{contig}_{unpacked[contig][1]}", 
-                                               code = self._seq_dict[contig].seq) for contig in unpacked]
-        elif sortby == "virus":
-            for virus in unpacked:
-                virus_str = ("_").join(virus.split())
-                out_file = os.path.join(out_dir, f"{sample}_{virus_str}")
-                self.tools["fasta"][filename] = [fastaTool(ID = f"{contig}_{virus}", 
-                                                 code = self._seq_dict[contig].seq) for contig in unpacked[virus]]
-                virs = self.getAllTools(fasta)
-                with open("w+", out_file) as fa:
-                    for tool in virs:
-                        tool.output(fa)
+            tool.Rma2Info(sortby, out_dir)
 
 @dataclass
 class Tool:
@@ -601,47 +601,36 @@ class pfamTool(Tool):
             pfamTool.pfam_to_gff3()
 
 class rmaTool():
-    def __init__(self, file, output, db, reads, blast_kind):
+    def __init__(self, file: str, output: str, db: str, 
+                 contigs: str, sample_name: str,
+                 blast_kind = ""):
         rma_file = os.path.splitext(os.path.basename(file))[0] + ".rma6"
         self.filename = os.path.join(output, rma_file)
-        runBlast2Rma(file, output, db, reads, blast_kind)
+        self.sample = sample_name
+        self.contig_to_taxon = {}
+        if not os.path.exists(self.filename):
+            runBlast2Rma(file, output, db, contigs, blast_kind)
         
     def Rma2Info(self, sortby: str, out_dir: str) -> dict:
         file_no_extension = os.path.splitext(self.filename)[0]
         self.rma_txt = os.path.join(out_dir, 
                                     f"{os.path.basename(file_no_extension)}_info.txt")
-        runRma2Info(self.filename, self.rma_txt)
-        if sortby == "contig":
-            self.info_dict = self.sortByContig()
-            return self.info_dict
-        elif sortby == "virus":
-            self.info_dict = self.sortByVirus()
-        else:
-            log.ERROR("Must sort by contig or virus.")
+        if not os.path.exists(self.rma_txt):
+            runRma2Info(self.filename, self.rma_txt)
+        self.info_dict = self.findRmaInfo()
         return self.info_dict
             
-    def sortByContig(self) -> dict:
-        info_dict = {}
+    def findRmaInfo(self) -> dict:
         with open(self.rma_txt, 'r') as info:
             for line in info.readlines():
                 contig_name, rank, *virus_name = line.split("\t")
                 virus_name = "_".join(virus_name).strip()
-                print(virus_name, "name")
-                print(rank, "rank")
                 virus_name = virus_name.replace(" ", "_")
-                info_dict[contig_name] = [rank, virus_name]
-                self._sorted = "contig"
-        return info_dict
+                self.contig_to_taxon[contig_name] = [rank, virus_name]
+        return self.contig_to_taxon
         
-    def sortByVirus(self) -> dict:
-        info_dict = defaultdict(list)
-        with open(self.rma_txt, 'r') as info:
-            for line in info.readlines():
-                contig_name, rank, virus_name = line.split("\t")
-                virus_name = virus_name.replace(" ", "_")
-                info_dict[virus_name].append(contig_name)
-        self._sorted = "virus"
-        return info_dict
-        
-    def getInfo(self) -> dict:
-        return self.info_dict
+    def getHitCSVInfo(self):
+        rows = []
+        for c, taxon in self.contig_to_taxon.items():
+            rows.append([self.sample, c, taxon[0], taxon[1]])
+        return rows

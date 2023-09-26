@@ -4,18 +4,22 @@ Created on Wed Nov 16 18:40:02 2022
 
 @author: mwodring
 """
+from ..LuggageInterface import SRA
+import sys, os, logging
 
-from .FastaKit import seqHandler
-import sys
+logging.basicConfig(stream = sys.stdout, level=logging.DEBUG)
+LOG = logging.getLogger(__name__)
 
-out_file = sys.argv[1]
-sra_file = sys.argv[2]
+def main():
+    out_file = sys.argv[1]
+    sra_file = sys.argv[2]
 
-#For now, just init an empty seqHandler and run the SRA. I could have a folder type it checks for and then runs fetchSRA by default but that would be less elegant imo. 
-#This way 'raw' reads can be same across other uses, such as tracking something through Angua if desired.
-#That's why it's in FastaKit and not on its own. 
-handler = seqHandler()
-handler.fetchSRA(output_folder = out_file, SRA_file = sra_file)
-sample_number = handler.renameSRA()
+    handler = SRA("raw", os.path.basename(out_file), 0)
+    count = handler.fetchSRAList(sra_file)
+    
+    handler.pigzAll()
 
-print("Samples pairs downloaded:", sample_number)
+    LOG.info(f"Sample (or pairs) downloaded: {count}.")
+    
+if __name__ == "__main__":
+    sys.exit(main())

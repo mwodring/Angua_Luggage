@@ -10,11 +10,14 @@ from Bio import SeqIO
 LOG = logging.getLogger(__name__)
 LOG.addHandler(logging.NullHandler())
 
+def runGzip(file: str):
+    subprocess.run(["pigz", file])
+
 def fetchSRA(output_folder: str, accession: str):
     LOG.info(f"Fetching {accession}")
     #.strip is added due to trailing newlines.
     #https://blog.dalibo.com/2022/09/12/monitoring-python-subprocesses.html
-    cmd = ["fasterq-dump", "-p", "-S", "-O", output_folder, accession.strip()]
+    cmd = ["fasterq-dump", "-S", "-O", output_folder, accession.strip()]
     with subprocess.Popen(cmd, stdout= PIPE, stderr=subprocess.PIPE, text=True) as proc:
         errs = []
         for line in proc.stderr:
@@ -58,7 +61,20 @@ def getNumMappedReads(bwa_file: str) -> str:
 
 def outputSamHist(sorted_file: str, out_file: str):
     subprocess.run(["samtools", "coverage", sorted_file, "-m", "-o", out_file])
-
+    
+def samToIndexedBam(in_sam: str, out_bam: str):
+    view_proc = subprocess.Popen(["samtools", "view", "-q", "0", "-F", 
+                                 "2304", "-bS", in_sam], stdout = subprocess.PIPE)
+    with open(out_bam, "w+") as bam:
+        bam.write(view_proc.stdout)
+    sort_proc = subprocess.Popen(["samtools", "sort", 
+                                "out_bam"])
+    out_sorted = out_bam.replace(".bam", "_sort.bam")
+    with open(out_sorted, "w+") as sort:
+        sort.write(sort_proc.stdout)
+    subprocess.run(["samtools", "index", out_sorted])
+    return out_sorted
+    
 def runBedtools(out_file: str, bam: str):
     proc = subprocess.run(["bedtools", "genomecov", "-bg", "-ibam", bam],
                           stdout = PIPE)

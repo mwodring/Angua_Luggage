@@ -3,7 +3,7 @@ from .utils import getSampleName, Cleanup, subSeqName
 from .exec_utils import *
 import json, importlib.resources
 from . import data
-import os
+import os, traceback
 
 LOG = logging.getLogger(__name__)
 LOG.addHandler(logging.NullHandler())
@@ -22,8 +22,12 @@ class blastParser(fileHandler):
     def updateFastaInfo(self):
         self._toolBelt.mapFastaToBlast()
     
-    def mergeCSVOutput(self):
-        out_csv = csvHandler(header)
+    def mergeCSVOutput(self, alt_header = ""):
+        if alt_header:
+            this_header = alt_header
+        else:
+            this_header = header
+        out_csv = csvHandler(this_header)
         for file in self.getFiles(dir_kind = "csv", 
                                   file_end = ".textsearch.csv"):
             out_csv.appendCSVContents(file, sample = True)
@@ -38,27 +42,29 @@ class blastParser(fileHandler):
         out_csv.outputMappedReads(dir_name = self.getFolder("csv"), 
                                   csv_file = csv_file)
                                   
-    def hitsToCSV(self, add_text: ""):
+    def hitsToCSV(self, add_text = "", tool_kind = "blast",
+                  alt_header = ""):
+        if alt_header:
+            this_header = alt_header
+        else:
+            this_header = header
         csv_out_folder = os.path.join(self.getFolder("out"), "csv")
         self.addFolder("csv", csv_out_folder)
-        for filename, info in self._toolBelt.getHitsCSVInfo():
+        for filename, info in self._toolBelt.getHitsCSVInfo(tool_kind):
             if info:
                 sample_name = getSampleName(filename, self.extend)
                 out_file = os.path.join(csv_out_folder, 
                                         f"{sample_name}_{add_text}.textsearch.csv")
-                csvHandler.outputHitsCSV(header = header, 
+                csvHandler.outputHitsCSV(header = this_header, 
                                          rows = info, out_file = out_file)
             else:
                 LOG.info(f"No suitable hits for {filename}.")
     
-    def hitContigsToFasta(self, by_species = False):
+    def hitContigsToFasta(self):
         self.updateFastaInfo()
         out_dir = os.path.join(self.getFolder("out"), "contigs")
         self.addFolder("parsed_contigs", out_dir)
-        if not by_species:
-            self._toolBelt.outputContigsAll(out_dir)
-        else:
-            self._toolBelt.outputContigBySpecies(out_dir, self.extend)
+        self._toolBelt.outputContigBySpecies(out_dir, self.extend)
     
     def hitAccessionsToFasta(self, email: str, db_type="N"):
         db_type = "nuc" if db_type == "N" else "prot"
@@ -100,7 +106,7 @@ class blastParser(fileHandler):
             seq_names, tmp_fas = self.makeTempFastas(sample_name, fasta)
             all_samples_dict[sample_name] = dict(zip(seq_names, tmp_fas))
         for sample_name, seq_to_tmp in all_samples_dict.items():
-            bwa_reads = self.findRawBySample(sample_name)
+            bwa_reads = self.findFastaBySample(sample_name, dir_kind = "raw")
             for seq_name, tmp_fa in seq_to_tmp.items():
                 underscore_seq_name = subSeqName(seq_name)
                 out_file = os.path.join(self.getFolder("bwa"), 
@@ -120,13 +126,6 @@ class blastParser(fileHandler):
         Cleanup(self.getFolder("acc"), [".amb", ".ann", ".bwt", ".pac", ".sa"])
         Cleanup(self.getFolder("bwa"), [".sam"])
         return tsv_files
-        
-    def findRawBySample(self, sample_name: str):
-        files = []
-        for file in self.getFiles("raw", [".fasta", ".fq"]):
-            if sample_name in file:
-                files.append(file)
-        return files
             
     @staticmethod
     def coverageToTSV(bwa_file: str, 
@@ -141,36 +140,35 @@ class blastParser(fileHandler):
         return tsv_file
         
 class SRA(fileHandler):
-    def fetchSRAList(self, output_dir: str, SRA_file: str):
-        results = []
-        self.addFolder(add_dir = out_dir, dir_kind = "raw")
+    def fetchSRAList(self, SRA_file: str):
+        count = 0
         with open(SRA_file, "r") as accessions:
-            for accession in accessions.readlines():
-                result = fetchSRA(out_dir, accession)
-                results.append(result)
-                
-    def renameSRA():
-        for file in self.getFiles(dir_kind = "raw", 
-                                  file_end = "_1.fastq.gz"):
-            sample_num = 1
-            #This will need testing!
-            whole_sample_name = getSampleName(file)
-            samplename = whole_sample_name.split("_")[0]   
-            #Uses the fact the SRR reads are stored under the 'raw' folder 
-            #type in fileHandler. Extension is based on what Angua anticipates.
-            new_filename = f"{samplename}_S{sample_num}_L001_R1_001.fastq.gz"
-            full_filename = os.path.join(raw_dir, 
-                                        filename)
-            os.rename(file, full_filename)
-            #Same for second read. This just ensures the reads get 
-            #the same sample name. 
-            new_filename_R2 = new_filename.replace("R1", "R2")
-            file_R2 = file.replace("_1", "_2")
-            os.rename(file_R2, new_filename_R2)
-            #Last of all increment the sample number.
-            sample_num += 1
-            #Returns the sample number for logging purposes if so desired.
-        return sample_num
+            to_fetch = accessions.readlines()
+        for accession in to_fetch:
+            accession = accession.strip()
+            complete_file = os.path.join(self.getFolder("raw"),
+                                         f"{accession}_SX_L001_R1_001.fastq.gz")
+            if not os.path.exists(complete_file):
+                proc_info = fetchSRA(self.getFolder("raw"), 
+                                     accession)
+                LOG.info(proc_info.stdout)
+            else:
+                LOG.info(f"{accession} already exists.")
+            count += self.renameSRA(accession)
+        return count 
+                       
+    def renameSRA(self, sample_name: str) -> int:
+        samples = (file for file in self.getFiles("raw", ".fastq") if sample_name in file)
+        for i, sample in enumerate(samples):
+            new_filename = f"{sample_name}_SX_L001_R{i+1}_001.fastq"
+            full_filename = os.path.join(self.getFolder("raw"), 
+                                         new_filename)
+            os.rename(sample, full_filename)
+        return 1
+    
+    def pigzAll(self):
+        for file in self.getFiles("raw", ".fastq"):
+            runGzip(file)
 
 class Annotatr(fileHandler):
     def generateorfTools(self):
@@ -240,23 +238,47 @@ class Annotatr(fileHandler):
                 self.getFiles("trimmed") 
                 if os.path.basename(file).startswith(sample)]
 
-class rmaHandler(fileHandler):
+class rmaHandler(blastParser):
     def blast2Rma(self, db: str, blast_kind = "BlastN"):
         output = self.addFolder("megan", self.getFolder("out"))
         for file in self.getFiles("xml", ".xml"):
             sample_name = getSampleName(file, extend = self.extend)
             contig_tools = self._toolBelt.getToolsByName("fasta", sample_name)
-            contig_filename = contig_tools[0].filename
+            if contig_tools:
+                contig_filename = contig_tools[0].filename
+            else:
+                LOG.error("No fasta/q file in contig directory. Did you make a typo?")
+                sys.exit(1)
             self._toolBelt.blast2Rma(file, 
                                      self.getFolder("out"),
                                      db, 
                                      contig_filename, 
-                                     blast_kind = blast_kind)
+                                     blast_kind,
+                                     sample_name)
     
-    def getMeganReport(self, sortby = "virus"):
+    def getMeganReport(self):
         report_dir = self.extendFolder("out", "reports", "Reports")
         self._toolBelt.getMeganReports(out_dir = report_dir)
-
+    
+    def updateFastaInfo(self):
+        self._toolBelt.mapFastaToRma()
+    
+    def hitsToCSV(self, header: list):
+        super().hitsToCSV(tool_kind = "rma",
+                          alt_header = header)
+                          
+    def findRmas(self, db: str, blast_kind: str):
+        for file in self.getFiles("megan", ".rma6"):
+            contig_tools = self._toolBelt.getToolsByName("fasta", sample_name)
+            contig_filename = contig_tools[0].filename
+            sample_name = getSampleName(file, extend = self.extend)
+            self._toolBelt.addRmaTool(file,
+                                      self.getFolder("out"),
+                                      db,
+                                      contig_filename,
+                                      blast_kind,
+                                      sample_name)
+        
 class spadesTidy(fileHandler):
     def spadesToDir(self, out_dir: str):
         in_dir = self.getFolder("in")
