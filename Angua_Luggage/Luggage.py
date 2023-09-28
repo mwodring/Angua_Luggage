@@ -273,15 +273,16 @@ class toolBelt():
     def outputContigBySpecies(self, out_dir: str, extend = 0):
         #This might need windows of some kind to avoid memory issues.
         for species in self.getUniqueSpecies():
-            species_tools = [tool for tool in self.getAllTools("fasta") 
-                            if tool.species == species]
-            underscore_species = subSeqName(species)
-            for tool in species_tools:
-                sample_name = getSampleName(tool.filename, extend = extend)
-                out_file = os.path.join(out_dir, 
-                                        f"{sample_name}_{underscore_species}_contigs.fasta")
-                with open(out_file, "a") as fa:
-                    tool.output(fa)
+            if species != "N/A" and species != "N_A":
+                species_tools = [tool for tool in self.getAllTools("fasta") 
+                                if tool.species == species]
+                underscore_species = subSeqName(species)
+                for tool in species_tools:
+                    sample_name = getSampleName(tool.filename, extend = extend)
+                    out_file = os.path.join(out_dir, 
+                                            f"{sample_name}_{underscore_species}_contigs.fasta")
+                    with open(out_file, "a") as fa:
+                        tool.output(fa)
     
     def migrateFasta(self, in_file: str, out_file: str):
         tools = self.tools["fasta"][in_file]
@@ -391,8 +392,10 @@ class toolBelt():
     
     def mapFastaToRma(self):
         for tool in self.getAllTools("rma"):
+            sample = getSampleName(tool.filename)
+            fasta_filename = self.getToolsByName("fasta", sample)[0].filename
             for c, taxon in tool.contig_to_taxon.items():
-                self.labelFasta(c, taxon[1])
+                self.labelFasta(fasta_filename, 1, c, taxon[1])
             
     def getMeganReports(self, out_dir: str, sortby = "virus"):
         for tool in self.getAllTools("rma"):
@@ -624,8 +627,7 @@ class rmaTool():
         with open(self.rma_txt, 'r') as info:
             for line in info.readlines():
                 contig_name, rank, *virus_name = line.split("\t")
-                virus_name = "_".join(virus_name).strip()
-                virus_name = virus_name.replace(" ", "_")
+                virus_name = " ".join(virus_name).strip()
                 self.contig_to_taxon[contig_name] = [rank, virus_name]
         return self.contig_to_taxon
         

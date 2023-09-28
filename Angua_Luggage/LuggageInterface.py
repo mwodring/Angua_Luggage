@@ -3,7 +3,7 @@ from .utils import getSampleName, Cleanup, subSeqName
 from .exec_utils import *
 import json, importlib.resources
 from . import data
-import os, traceback
+import os, traceback, sys
 
 LOG = logging.getLogger(__name__)
 LOG.addHandler(logging.NullHandler())
