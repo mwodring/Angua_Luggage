@@ -102,8 +102,9 @@ class fileHandler:
     
     def findFastaBySample(self, sample_name: str, dir_kind: str):
         files = []
-        for file in self.getFiles(dir_kind, [".fasta", ".fq", ".fq.gz"]):
-            if sample_name in file:
+        for file in self.getFiles(dir_kind, [".fasta", ".fq", ".fq.gz",
+                                             ".fastq", ".fastq.gz"]):
+            if sample_name in file and not ".log" in file:
                 files.append(file)
         return files
     
@@ -120,7 +121,7 @@ class fileHandler:
         LOG.info(f"Found {num} xml files.")
     
     def findFastaFiles(self, look_dir = "contigs") -> Generator[str]:
-        fastas = self.getFiles(look_dir, [".fasta", ".fq"])
+        fastas = self.getFiles(look_dir, [".fasta", ".fq", ".fastq"])
         if not fastas:
             LOG.critical("No .fasta files in folder!")
         for fasta in fastas:
@@ -242,9 +243,6 @@ class toolBelt():
     def findHitContigNames(self):
         for tool in self.getAllTools("blast"):
             print(tool.hit)
-    
-    def getTool(self, tool_kind: str, filename: str):
-        return self.tools[toolkind][filename]
 
     #To run a process on all tools of type in all files.
     def process_all(self, tool_kind: str, func: str, 
@@ -285,6 +283,9 @@ class toolBelt():
                         tool.output(fa)
     
     def migrateFasta(self, in_file: str, out_file: str):
+        print(in_file)
+        print(self.tools["fasta"])
+        quit()
         tools = self.tools["fasta"][in_file]
         with open(out_file, "a") as fa:
             for tool in tools:
@@ -324,8 +325,9 @@ class toolBelt():
             seq_name = subSeqName(tool.seq.description)
             species = " ".join(tool.seq.description.split(" ")[1:])
             tool.updateSpecies(species)
+            bef_path_seq_name = seq_name.split("path=")[0]
             tmp_file = os.path.join(tmp_dir, 
-                                    f"{sample_name}_{seq_name}_tmp.fasta")
+                                    f"{sample_name}_{bef_path_seq_name}_tmp.fasta")
             seq_names.append(species)
             tmp_fas.append(tmp_file)
             with open(tmp_file, "w+") as fa:
@@ -374,16 +376,16 @@ class toolBelt():
                                           plot_img_dir, backmap_dir)
     
     def sortFastaOnLen(self, in_fa: str, out_fa: str, min_len: int):
-        fas = self.getTool("fasta", in_fa)
+        fas = self.getToolsByName("fasta", in_fa)
         sorted_fas = [fa for fa in fas if fa.longerThan(min_len)]
         for fa in sorted_fas:
-            with open(out_fa, "w+") as file:
+            with open(out_fa, "a") as file:
                 fa.output(file)
                     
-    def filterFasta(self, in_fa: str, out_fa: str, on: str, flt: any):
+    def filterFasta(self, in_fa: str, out_fa: str, on: str, filt: any):
         self.addFastaTool(in_fa)
         if on == "len":
-            self.sortFastaOnLen(in_fa, out_fa, flt)
+            self.sortFastaOnLen(in_fa, out_fa, filt)
     
     def blast2Rma(self, file: str, output: str, db: str, contigs: str, 
                         blast_kind: str, sample_name: str):

@@ -67,7 +67,7 @@ def samToIndexedBam(in_sam: str, out_bam: str):
     with open(out_bam, "w+") as bam:
         bam.write(view_proc.stdout)
     sort_proc = subprocess.Popen(["samtools", "sort", 
-                                "out_bam"])
+                                  "out_bam"])
     out_sorted = out_bam.replace(".bam", "_sort.bam")
     with open(out_sorted, "w+") as sort:
         sort.write(sort_proc.stdout)
@@ -75,32 +75,36 @@ def samToIndexedBam(in_sam: str, out_bam: str):
     return out_sorted
     
 def runBedtools(out_file: str, bam: str):
-    proc = subprocess.run(["bedtools", "genomecov", "-bg", "-ibam", bam],
-                          stdout = PIPE)
     with open(out_file, "wb") as bg:
-        bg.write(proc.stdout)
+        subprocess.run(["bedtools", "genomecov", "-bg", "-ibam", bam],
+                          stdout = bg)
     subprocess.run(["pigz", out_file])
 
-def runBwa(fa: str, bwa_reads: list[str], out_file: str):
+def runBwa(fa: str, bwa_reads: list[str], out_file: str, threads = 12):
     index_result = subprocess.run(["bwa-mem2", "index", fa], capture_output=True)
     LOG.info(index_result.stdout)
-    proc_call = ["bwa-mem2", "mem", "-v", "0", "-t", 
-                 "12", "-v", "3", 
-                 fa]
+    proc_call = ["bwa-mem2", "mem", "-v", "1", "-t", str(threads), fa]
     proc_call.extend(bwa_reads)
-    bwa_proc = subprocess.run(proc_call, stdout = PIPE)
-    with open(out_file, "wb") as sam:
-        sam.write(bwa_proc.stdout)
-
-def samSort(bam_file: str, sam_file: str):
-    pysam.sort("-o", sam_file, bam_file)
+    with open(out_file, "w+") as sam:
+        subprocess.run(proc_call, stdout=sam)
+    
+def samSort(bam_file: str, sam_file: str, mapq: int, flag: int):
+    with open(bam_file, "w+") as bam:
+        subprocess.run(["samtools", "view", "-q", str(mapq), "-F", str(flag), 
+                          "-bS", sam_file], stdout = bam)
+    pysam.sort("-o", bam_file, bam_file)
+    subprocess.run(["samtools", "index", bam_file])
+    idx_txt_out = os.path.splitext(sam_file)[0] + "_stats.txt"
+    with open(idx_txt_out, "w+") as txt:
+        subprocess.run(["samtools", "idxstats", bam_file], stdout = txt)
                                  
 def runPfam(fasta_file, outfile, db_dir):
     with open(outfile, "w") as output:
         subprocess.run(["pfam_scan.pl", "-fasta", fasta_file, "-dir", db_dir, 
         "-json", "pretty"], stdout = output)
         
-def runBlast2Rma(file, outdir, db, reads, blast_kind = "BlastN"):
+def runBlast2Rma(file: str, outdir: str, db: str, reads: str, 
+                 blast_kind = "BlastN"):
     subprocess.run(["blast2rma", "-i", file, "-f", "BlastXML", "-o", outdir, 
                     "-ms", "75", "-sup", "1", "-a2t", db, "-bm", blast_kind, 
                     "-r", reads])
@@ -109,3 +113,40 @@ def runRma2Info(filename, outfile):
     with open(outfile, "w") as output:
             subprocess.run(["rma2info", "--in", filename, "-vo", "-n", "-r2c", 
                             "Taxonomy", "-r", "-u", "false", "-v"], stdout = output)
+
+def fastQC(threads: int, in_file: str, out_dir: str):
+    subprocess.run(["fastqc", "-t", str(threads), in_file, "-o", out_dir])
+    
+def multiQC(input_dir: str, output_dir: str):
+    subprocess.run(["multiqc", input_dir, "-o", output_dir])
+
+def runBbduk(in_R1: str, in_R2: str, out_R1: str, out_R2: str,
+             min_len: int, adapters: str, min_q: int):
+    subprocess.run(["bbduk.sh", 
+    f"in1={in_R1}", f"in2={in_R2}", f"out1={out_R1}", f"out2={out_R2}",
+    f"minlen={min_len}", "ktrim=r", "k=23", "mink=11", "hdist=1",
+    f"ref={adapters}", "qtrim=r", f"trimq={min_q}"])
+   
+def runTrinity(in_R1: str, in_R2: str, out_file: str, mem: str, threads: int):
+    trinity_proc = subprocess.run(["Trinity", "--seqType", "fq", 
+                                   "--max_memory", mem,
+                                   "--left", in_R1, "--right", in_R2, 
+                                   "--CPU", str(threads), 
+                                   "--full_cleanup", 
+                                   "--output", out_file],
+                                   stdout = subprocess.PIPE)
+    return trinity_proc.stdout
+
+def mmseqs2(in_file: str, output: str, perc, threads: int, tmp: str) -> None:
+    subprocess.run(["mmseqs", "easy-cluster", in_file, output, tmp,
+                    "-c", str(perc), "--threads", str(threads), 
+                    "-v", "1"])
+
+def runNhmmer(sample_out: str, hmm, sample_in: str):
+    subprocess.run(["nhmmer", "-o", f"{sample_out}.hmm", 
+                    "--tblout", f"{sample_out}.tbl", hmm, sample_in])
+                    
+def bedtoolsWriteFasta(sample_out: str, sample_in: str):
+    subprocess.run(["bedtools", "getfasta", "-s", "-fo", 
+                    f"{sample_out}.fasta", "-fi", sample_in,
+                    "-bed", f"{sample_out}.bed"])

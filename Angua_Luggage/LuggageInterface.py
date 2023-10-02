@@ -92,38 +92,41 @@ class blastParser(fileHandler):
                                 sample_name = sample_name)
         return seq_names, tmp_fas 
     
-    def runBwaTS(self, raw_dir: str, in_dir_type: str, extend = 0) -> list:
+    def runBwaTS(self, raw_dir: str, in_dir_type = "acc", extend = 0,
+                 threads = 23, mapq = 0, flag = 2304, text_search = True) -> list:
         self.addFolder("raw", raw_dir)
         self.findFastaFiles("raw")
-        self.addFolder("bwa", os.path.join(self.getFolder("out"), "bwa"))
+        self.extendFolder("out", "bwa", "bwa")
+        self.extendFolder("out", "hist", "Histograms")
+        all_trimmed = (file for file in self.getFiles("raw") if "R1" in file)
         tsv_files = []
         all_samples_dict = {}
-        tmp_dir = os.path.join(self.getFolder("acc"), "tmp")
-        self.addFolder("tmp", tmp_dir)
+        tmp_dir = self.extendFolder(in_dir_type, "tmp", "tmp")
         for fasta in self.getFiles(in_dir_type, ".fasta"):
+            dir_name = os.path.splitext(os.path.basename(fasta))[0]
             self.addFastaFile(fasta)
-            sample_name = getSampleName(fasta, extend = extend)
+            sample_name = getSampleName(fasta, extend = extend) if text_search else getSampleName(next(all_trimmed), extend = 1)
             seq_names, tmp_fas = self.makeTempFastas(sample_name, fasta)
             all_samples_dict[sample_name] = dict(zip(seq_names, tmp_fas))
         for sample_name, seq_to_tmp in all_samples_dict.items():
             bwa_reads = self.findFastaBySample(sample_name, dir_kind = "raw")
             for seq_name, tmp_fa in seq_to_tmp.items():
                 underscore_seq_name = subSeqName(seq_name)
-                out_file = os.path.join(self.getFolder("bwa"), 
+                out_dir = self.extendFolder("bwa", dir_name, dir_name)
+                out_file = os.path.join(out_dir, 
                                         f"{sample_name}_{underscore_seq_name}.sam")
-                sorted_file = os.path.join(self.getFolder("bwa"), 
+                sorted_file = os.path.join(out_dir, 
                                            f"{sample_name}_{underscore_seq_name}.sorted.bam")
                 if not os.path.exists(sorted_file):
-                    runBwa(tmp_fa, bwa_reads, out_file)
-                    samSort(out_file, sorted_file)
-                    self.extendFolder("out", "hist", "Histograms")
-                    hist_file = os.path.join(self.getFolder("hist"), 
-                                                            f"{sample_name}_{underscore_seq_name}_hist.txt")
+                    runBwa(tmp_fa, bwa_reads, out_file, threads = threads)
+                    samSort(sorted_file, out_file, mapq, flag)
+                    hist_dir = self.extendFolder("hist", dir_name, dir_name)
+                    hist_file = os.path.join(hist_dir, 
+                                             f"{sample_name}_{underscore_seq_name}_hist.txt")
                     outputSamHist(sorted_file, hist_file)
                     self.coverageToTSV(out_file, sample_name, seq_name)
-                #Just remove the folder - write a remove dir function.
         self.removeFolder("tmp")
-        Cleanup(self.getFolder("acc"), [".amb", ".ann", ".bwt", ".pac", ".sa"])
+        Cleanup(self.getFolder(in_dir_type), [".amb", ".ann", ".bwt", ".pac", ".sa"])
         Cleanup(self.getFolder("bwa"), [".sam"])
         return tsv_files
             
@@ -134,6 +137,7 @@ class blastParser(fileHandler):
         num_mapped_reads = getNumMappedReads(bwa_file)
         if num_mapped_reads == 0:
             LOG.info(f"No reads mapped for {seq_name} to {sample_name}.")
+        seq_name = subSeqName(seq_name)
         tsv_file = os.path.join(bwa_dir, 
                                 f"{sample_name}_{seq_name}.tsv")
         csvHandler.mappedReadsTSV(tsv_file, sample_name, seq_name, num_mapped_reads)
@@ -205,9 +209,9 @@ class Annotatr(fileHandler):
             plot_dir = self.extendFolder("ORFs", "plots", "ORF_plots")
             self._toolBelt.plotAnnotations(self.pfam_grl_file, self.pfam_df_file, 
                                            plot_dir, self.getFolder("bedgraph"))
-    
-    def backMap(self):
-        backmap_dir = self.extendFolder("contigs", "backmap", "backmap")
+
+    def backMap(self, threads = 23, mapq = 0, flag = 2304, out_dir = ""):
+        backmap_dir = self.extendFolder("contigs", "backmap", "backmap") if not out_dir else self.getFolder("out")
         sorted_files = {}
         for file in self.getFiles("contigs", ".fasta"):
             sample_name = getSampleName(file, extend = self.extend)
@@ -215,7 +219,7 @@ class Annotatr(fileHandler):
             if not os.path.exists(out_file):
                 current_trimmed = self.findTrimmed(sample_name)
                 sam_file = os.path.splitext(out_file)[0] + ".sam"
-                bwa_proc = runBwa(file, current_trimmed, sam_file)
+                runBwa(file, current_trimmed, sam_file, threads)
                 bam_file = os.path.splitext(out_file)[0] + ".bam"
                 samSort(sam_file, bam_file)
                 Cleanup(backmap_dir, ".sam")

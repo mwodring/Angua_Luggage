@@ -1,9 +1,13 @@
 import os, sys, shutil, multiprocessing
-import .exec_Angua
 import argparse
-import datetime
-import inspect
-import pysam
+import datetime, inspect, pysam
+import functools
+import pandas as pd
+
+from pathlib import Path
+
+import dataclasses 
+from dataclasses import dataclass, field
 
 from pathlib import Path
 from Bio import SeqIO
@@ -11,217 +15,444 @@ from Bio.Blast import NCBIXML
 
 from .Luggage import fileHandler, toolBelt
 from .exec_utils import *
+from .utils import *
+from .LuggageInterface import blastParser
+
+from collections.abc import Generator
 
 #Doesn't use a file right this second but it will.
-logging.basicConfig(stream = sys.stdout)
+logging.basicConfig(stream = sys.stdout, level=logging.DEBUG)
 LOG = logging.getLogger(__name__)
 
+@dataclass
+class Blast:
+	input_files: list[str]
+	output_dir: str
+	mode: str
+	blast_pool: int
+	blast_type: str
+	blast_task: str
+	database_path: str
+	threads: int
+	alignments: int
+
+	def run_blast_parallel(self):
+		# Get pool size
+		pool = multiprocessing.Pool(processes = 1)
+		if self.mode == "blastn":
+			pool = multiprocessing.Pool(processes = int(self.blast_pool))
+		elif self.mode == "blastx":
+			pool = multiprocessing.Pool(processes = 1)
+		
+		results = [
+			pool.apply_async(
+			self.blast_query, 
+			args = (file, 
+			f"{self.output_dir}/{os.path.basename(file)}.{self.blast_task}.xml")
+			)
+			for file in self.input_files
+		]
+
+		for p in results:
+			p.get()
+
+	def blast_query(self, input_file, output_file):
+		LOG.info(f"Starting blast for {os.path.basename(input_file)}.")
+		# Run blast query
+		blast_child = subprocess.Popen(
+			[self.blast_type, 
+			 "-task", self.blast_task,
+			 "-db", self.database_path,
+			 "-query", input_file,
+			 "-num_threads", str(self.threads),
+			 "-outfmt", "5",
+			 "-out", output_file],
+			stdout = subprocess.PIPE,
+			stderr = subprocess.PIPE,
+			universal_newlines = True
+		)
+		
+		#Should process the stderr before marking something as complete.
+		blast_output, blast_error = blast_child.communicate()
+
+		LOG.info(f"Blast complete for query: {os.path.basename(input_file)}.")
+		
 class Angua(fileHandler):
-	def __init__(self):
-		super().__init__()
-		#This is hard-coded for now but I'll change it soon.
-		self.initPipelineFolders()
-	
-	def optional_folders(func):
-		#This function looks at the input args and checks if it needs to override
-		#any defaults.
-        @functools.wraps(func)
-        def wrapper_optional_folders(self, *args, **kwargs):
-            for arg_name, arg_contents in kwargs.items():
-                if arg_name.endswith("dir") and arg_contents:
-                    dir_kind = "_".join(arg_name.split("_")[:-1])
-                    self.addFolder(dir_kind, arg_contents)
-            return func(self, *args, **kwargs)
-        return wrapper_optional_folders
-        
+	#DECORATOR
+	def check_complete(func):
+		@functools.wraps(func)
+		def wrapper_check_complete(self, *args, **kwargs):
+			stage = "_".join(func.__name__.split("_")[1:])
+			finished_file = os.path.join(self.getFolder(stage), f"{stage}.finished")
+			if os.path.exists(finished_file):
+				LOG.info(f"{stage} already complete, skipping!")
+			else:
+				output = func(self, *args, **kwargs)
+				if output:
+					Path(finished_file).touch()
+					LOG.info(f"{stage} completed successfully.")
+				else: 
+					LOG.error(f"Something went wrong with {stage}.")
+		return wrapper_check_complete
+		
 	def extendFolderMultiple(self, orig_dir_kind: str, 
 								   dir_kinds: list, dir_names: list):
-		#Zip?
 		for dir_kind, dir_name in zip(dir_kinds, dir_names):
 			self.extendFolder(orig_dir_kind, dir_kind, dir_name)
+	
+	def getFoldersIn(self, dir_kind: str):
+		yield from [f.path for f in os.scandir(self.getFolder(dir_kind)) if f.is_dir()]
 			
-	def initPipelineFolders(self):
-		self.extendFolder("out", "results", "Results")
-		self.extendFolder("out", "qc", "QC")
-		self.extendFolderMultiple("QC", ["QC_raw_F", "QC_raw_M"],
-										["FastQC", "MultiQC"])
-		self.extendFolderMultiple("QC", ["QC_trimmed_F", "QC_trimmed_M"],
-										["FastQC", "MultiQC"])
-		self.extendFolder("out", "trimmed", "Bbduk")
-		self.extendFolder("out", "assembly", options.assembler)
-		self.extendFolder("out", "contigs", "Contigs")
-		self.extendFolder("out", "clustered", "Mmseqs2")
-		self.extendFolder("out", "unmapped", "Unmapped")
-		self.extendFolderMultiple("unmapped", 
-								 ["unm_bwa", "unm_reads",  "unm_clust"
-								  "unm_blastn"],
-								 ["BwA", "Reads", "Mmseqs2", "Blastn"])
-		self.extendFolderMultiple("out", ["blastn", "blastx"], 
-										 ["Blastn", "Blastx"])
-		self.extendFolder["out", "megan", "Megan"]
-		self.extendFolderMultiple("megan", ["meg_blastn", "meg_blastx"],
-										   ["blastn", "blastx"])
-										   
-	@optional_folders
-	def pre_qc_checks(self, qc_threads: int, raw_dir = "", 
-							QC_raw_F_dir = "", QC_raw_M_dir = ""):
+	def getContigsSorted(self, length = "min"):
+		sorted_folders = [f for f in self.getFoldersIn("contigs")]
+		nums = [int(os.path.basename(f)) for f in sorted_folders]
+		if length == "min":
+			target = min(nums)
+		elif length == "max":
+			target = max(nums)
+		else:
+			target = int(length)
+		for f, n in zip(sorted_folders, nums):
+			if n == target:
+				return f
+	
+	@check_complete	
+	def run_pre_qc(self, qc_threads: int) -> int:
 		# Run FastQC and MultiQC on the supplied directory
 		fastqc_dir = self.getFolder("QC_raw_F")
-		exec_Angua.fastQC(qc_threads, self.getFolder("raw"), fastqc_dir)
-		exec_Angua.multiQC(fastqc_dir, self.getFolder("QC_raw_M"))
+		for file in self.getFiles("raw", [".fastq.gz", ".fastq"]):
+			fastQC(qc_threads, file, fastqc_dir)
+		multiQC(fastqc_dir, self.getFolder("QC_raw_M"))
+		return 1
 	
-	@optional_folders
-	def post_qc_checks(self, qc_threads: int, 
-							 QC_trimmed_F_dir = "", QC_trimmed_M_dir = ""):
-		exec_Angua.fastQC(qc_threads, self.getFolder("trimmed"), 
-									  self.getFolder("QC_trimmed_F")
-		exec_Angua.multiQC(self.getFolder("QC_trimmed_F"),
-						   self.getFolder("QC_trimmed_M")	
-	
-	@optional_folders
-	def run_bbduk(self, min_len: int, adapters: str, min_q: int, 
-						raw_dir = "", trimmed_dir = ""): 
-		trimmed_dir = self.getFolder("trimmed")
-		out_dir = self.getFolder("raw")
-		for file_R1 in self.getFiles("raw", "_R1.fasta"):
-			file_R2 = file.replace("_R1", "_R2")
-			sample_name_R1 = getSampleName(file_R1)
-			sample_name_R2 = sample_name_R1.replace("_R1", "_R2")
-
-			trimmer_input_R1 = os.path.join(raw_dir, file_R1)
-			trimmer_input_R2 = os.path.join(raw_dir, file_R2)
-			trimmer_output_R1 = os.path.join(trimmed_dir, file.replace('_L001_R1_001', '_R1'))
-			trimmer_output_R2 = os.path.join(trimmed_dir, file_R2.replace('_L001_R2_001', '_R2'))
-
-			exec_Angua.runBbduk(trimmed_input_R1, trimmer_input_R2
-								trimmer_output_R1, trimmer_output_R2
-								min_len, adapters, min_q)
-	
+	#Definitely repeating myself here.
+	@check_complete
+	def run_post_qc(self, qc_threads: int) -> int:
+		fastqc_dir = self.getFolder("QC_trimmed_F")
+		for file in self.getFiles("bbduk", [".fastq", ".fastq.gz"]):
+			fastQC(qc_threads, file, self.getFolder("QC_trimmed_F"))
+		multiQC(self.getFolder("QC_trimmed_F"),
+				self.getFolder("QC_trimmed_M"))	
+		return 1
+		
+	@check_complete
+	def run_bbduk(self, min_len: int, adapters: str, min_q: int): 
+		trimmed_dir = self.getFolder("bbduk")
+		raw_dir = self.getFolder("raw")
+		processed = 0
+		for file_R1 in self.getFiles("raw", "_R1_001.fastq.gz"):
+			file_R2 = file_R1.replace("_R1", "_R2")
+			base_R1, base_R2 = os.path.basename(file_R1), os.path.basename(file_R2)
+			sample_R1 = base_R1.replace("_L001_R1_001", "_R1")
+			sample_R2 = base_R2.replace("_L001_R2_001", "_R2")
+			out_R1 = os.path.join(trimmed_dir, sample_R1)
+			out_R2 = os.path.join(trimmed_dir, sample_R2)
+			runBbduk(file_R1, file_R2,
+					 out_R1, out_R2,
+					 min_len, adapters, min_q)
+			processed += 1
+		if processed > 0:
+			return 1
+		else:
+			return
+		
 	#I can probably use a function to set up the _R2 files since this repeatd the above.
-	@optional_folders
-	def run_trinity(mem: str, threads: int,
-					trimmed_dir = "", trinity_dir = "")y
-		for file_R1 in self.getFiles("trimmed", "_R1.fasta"):
-			file_R2 = file.replace("_R1", "_R2")
-			sample_name_R1 = getSampleName(file_R1)
-			sample_name_R2 = sample_name_R1.replace("_R1", "_R2")
-			
-			trimmed_dir, trinity_dir = self.getFolder("trimmed"), 
-								       self.getFolder("assembly")
-			trinity_input_R1 = os.path.join(trimmed_dir, file)
-			trinity_input_R2 = os.path.join(trimmed_dir, file)
-			trinity_output = os.path.join(
-							 trinity_dir, 
-							 f"{sample_name_R1.replace('_R1', '_trinity')}")
-			trinity_log = os.path.join(
-						  trinity_dir,
-						  f"{sample_name_R1.replace('_R1', '.log')}")
-
-			log = exec_Angua.runTrinity(trinity_input_R1, trinity_input_R2,
-									    trinity_output, mem, threads)
-			LOG.info(log)
+	def run_trinity(self, mem: str, threads: int):
+		self.assembler = "Trinity"
+		finished_file = os.path.join(self.getFolder("contigs"), 
+													"Trinity.finished")
+		if os.path.exists(finished_file):
+			return ("Trinity already completed, skipping.")
+		processed = 0
+		for file_R1 in self.getFiles("bbduk", "_R1.fastq.gz"):
+			file_R2 = file_R1.replace("_R1", "_R2")
+			base_R1 =  os.path.basename(file_R1).split(".")[0]
+			trimmed_dir, trinity_dir = self.getFolder("bbduk"), self.getFolder("contigs")
+			trinity_output = os.path.join(trinity_dir, 
+										  base_R1.replace("_R1", "_trinity"))
+			trinity_log = trinity_output.replace("_trinity", ".log")
+			LOG.info(f"Running Trinity on {getSampleName(file_R1, extend=1)}.")
+			log = runTrinity(file_R1, file_R2,
+							 trinity_output, mem, threads)
+			with open(trinity_log, "wb") as tlog:
+				tlog.write(log)
+			shutil.rmtree(trinity_output, ignore_errors=True)
+			processed += 1
+		if processed <= 0:
+			return "Trinity failed!"
+		else:
+			Path(finished_file).touch()
+			return "Trinity complete."
 	
 	### Sort and rename contigs
 	def sort_fasta_by_length(self, min_len: int):
 		out = self.extendFolder("contigs", f"sorted_{min_len}", str(min_len))
 		for file in self.getFiles("contigs", ".fasta"):
-			sample_name = file.split("_trinity")[0]
+			sample_name = getSampleName(file, extend=1)
 			output_file = os.path.join(out, 
-									   f"{sample_name}_sorted_{min_length}.fasta"
+									   f"{sample_name}_sorted_{min_len}.fasta")
 			self._toolBelt.filterFasta(file, output_file, "len", min_len)
 	
-	@optional_folders
-	def cluster_reads(self, dir_kind: str, perc, threads: int, 
-							cluster_dir = "", cluster-in_dir = ""):
+	@check_complete
+	def run_mmseqs2(self, dir_kind: str, perc, threads: int) -> int:
 		if not self.getFolder(dir_kind):
-			dir_kind = "cluster-in"
-		if not self.getFolder("cluster"):
-			out_dir = self.extendFolder(dir_kind, "cluster", "Mmseqs2")
+			dir_kind = "cluster_in"
+		if not self.getFolder("mmseqs2"):
+			out_dir = self.extendFolder(dir_kind, "mmseqs2", "Mmseqs2")
 		else:
-			out_dir = self.getFolder("cluster")
+			out_dir = self.getFolder("mmseqs2")
+		tmp = f"{out_dir}/tmp/"
 		for file in self.getFiles(dir_kind):
 			sample_name = getSampleName(file)
-			exec_Angua.cluster(file, out_dir, perc, threads) 
+			out_file = os.path.join(out_dir, sample_name)
+			mmseqs2(file, out_file, perc, threads, tmp) 
 			# Remove and rename intermediate files
-			os.remove(os.path.join(out_dir, f"{file}_all_seqs.fasta"))
-			before_rep_seq, after_rep_seq = os.path.join(
-											out_dir, 
-											f"{file}_rep_seq.fasta"),
-											os.path.join(out_dir,
-											f"{sample_name}_rep_seq.fasta")
-			os.rename(before_rep_seq, after_rep_seq)
-			before_tsv, after_tsv = os.path.join(out_dir,
-												 f"{file}_cluster.tsv"),
-												os.path.join(out_dir,
-												 f"{sample_name}_cluster.tsv")
-			os.rename(before_tsv, after_tsv)
+			to_remove = [file for file in self.getFiles("mmseqs2") if "all_seqs" in file]
+			for file in to_remove:
+				os.remove(file)
+		# Remove the tmp dir
+		shutil.rmtree(tmp)
 
-	# Remove the tmp dir
-	shutil.rmtree(f"{output_dir}/tmp/")
-
-	LOG.info("Clustering complete.")
+		LOG.info("Clustering complete.")
+		return 1
 		
-	def get_unmapped(min_len: int, min_alignment_len: int, threads: int,
-					 trimmed_dir: ""):
-	for file in self.getFiles("trimmed", ".fasta"):
-		sample_name = getSampleName(file, extend=1)
-		self.extendFolder("out", "unmapped", "Unmapped")
-		current_bwa_dir = self.extendFolder("unmapped", "bwa_current", sample_name)
-		shutil.copy(file, current_bwa_dir)
-		input_file = os.path.join(current_bwa_dir, file)
-		sam_file = os.path.join(current_bwa_dir, f"{sample_name}_sort.sam"})
+	@check_complete
+	def get_unmapped(self, min_len: int, min_alignment_len: int, 
+						   threads: int) -> int:
+		for file in self.getFiles("bbduk", ".fasta"):
+			sample_name = getSampleName(file, extend=1)
+			self.extendFolder("out", "unmapped", "Unmapped")
+			current_bwa_dir = self.extendFolder("unmapped", 
+												"bwa_current", 
+												sample_name)
+			shutil.copy(file, current_bwa_dir)
+			input_file = os.path.join(current_bwa_dir, file)
+			sam_file = os.path.join(current_bwa_dir, f"{sample_name}_sort.sam")
 
-		raw_reads = findRawBySample(sample_name)
+			raw_reads = findRawBySample(sample_name)
 
-		# Index reference
-		runBwa(input_file, raw_reads, sam_file)
+			# Index reference
+			runBwa(input_file, raw_reads, sam_file)
 
-		# BWA and samtools
-		sort_file = samToIndexedBam(in_sam = sam_file, 
-									out_sam = os.path.join(current_bwa_dir, 
-									f"{sample_name}.bam"))
+			# BWA and samtools
+			sort_file = samToIndexedBam(in_sam = sam_file, 
+										out_sam = os.path.join(current_bwa_dir, 
+										f"{sample_name}.bam"))
 
-		# Pysam
-		reads_dir = self.extendFolder("unmapped", "reads_out", "Reads")
-		bamfile = pysam.AlignmentFile(sort_file, "rb")
-		with open(os.path.join(reads_dir, f"{sample_name}.fasta", "w") as outfile:
-			for read in bamfile.fetch(until_eof = True):
-				try:
-					if read.query_alignment_length >= (int(read.infer_read_length()) / 3):
-						if read.query_alignment_length >= int(min_alignment_len):
-							good += 1
+			# Pysam
+			reads_dir = self.extendFolder("unmapped", "reads_out", "Reads")
+			bamfile = pysam.AlignmentFile(sort_file, "rb")
+			with open(os.path.join(reads_dir, f"{sample_name}.fasta"), "w") as outfile:
+				for read in bamfile.fetch(until_eof = True):
+					try:
+						if read.query_alignment_length >= (int(read.infer_read_length()) / 3):
+							if read.query_alignment_length >= int(min_alignment_len):
+								good += 1
+							else:
+								outfile.write(f">{read.query_name}\n")
+								outfile.write(f"{read.query_sequence}\n")
 						else:
 							outfile.write(f">{read.query_name}\n")
 							outfile.write(f"{read.query_sequence}\n")
-					else:
+					except:
 						outfile.write(f">{read.query_name}\n")
 						outfile.write(f"{read.query_sequence}\n")
-				except:
-					outfile.write(f">{read.query_name}\n")
-					outfile.write(f"{read.query_sequence}\n")
 
-		# Close file
-		bamfile.close()
-		
+			# Close file
+			bamfile.close()
+		return 1
+	
+	@check_complete
+	def run_blastn(self, options) -> int:
+		in_dir = self.getContigsSorted("min")
+		blastn = Blast([os.path.join(in_dir, file) for file in os.listdir(in_dir) if file.endswith(".fasta")], 
+					   self.getFolder("blastn"), 
+					   "blastn", options.blast_pool, 
+					   "blastn", "megablast", 
+					   options.nt_db, 
+					   options.blastn_threads,
+					   options.blast_alignments)
+		blastn.run_blast_parallel()
+		return 1
+			
+	@check_complete
+	def run_blastx(self, options) -> int:
+		mmseqs2 = self.getFolder("mmseqs2")
+		if mmseqs2:
+			in_files = [file for file in self.getFiles("mmseqs2", ".fasta")]
+		else:
+			in_dir = self.getContigsSorted("max")
+			in_files = [os.path.join(in_dir, file) for file in os.listdir(in_dir) 
+						if file.endswith(".fasta")]
+		out_dir = self.getFolder("blastx")
+		blastx = Blast(in_files, out_dir, 
+					   "blastx", options.blast_pool, 
+					   "blastx", "blastx", 
+					   options.nr_db, 
+					   options.blastx_threads, 
+					   options.blast_alignments)
+		blastx.run_blast_parallel()
+		return 1
+	
+	def run_megan(self, blast_type: str, megan_db: str):
+		blast_lower = blast_type.lower()
+		in_dir = self.getFolder(blast_lower)
+		out_dir = self.getFolder(f"megan_{blast_lower}")
+		contigs = self.getContigsSorted("min") if blast_type == "BlastN" else self.getFolder("mmseqs2")
+		if not contigs:
+			contigs = self.getContigsSorted("max")
+		self.addFolder("megan_in", contigs)
+		self.findFastaFiles("megan_in")
+		for file in self.getFiles(blast_lower, ".xml"):
+			sample_name = getSampleName(file)
+			current_contigs = self._toolBelt.getToolsByName("fasta", sample_name)[0].filename
+			self._toolBelt.blast2Rma(file, out_dir, megan_db, 
+									 current_contigs, blast_type,
+									 sample_name)
+
+	def stats(self):
+		def renameReads(dataframe, new_name: str):
+			dataframe = dataframe[is_R1_mask]
+			dataframe = dataframe[["Sample", 
+								   "FastQC_mqc-generalstats-fastqc-percent_fails"]]
+			dataframe = dataframe.rename(columns = 
+				      {"FastQC_mqc-generalstats-fastqc-percent_fails": 
+				       new_name})
+			return dataframe
+		# Raw data stats
+		input_raw_stats = os.path.join(self.getFolder("QC_raw_M"),
+									   "multiqc_data",
+									   "multiqc_general_stats.txt")
+		df = pd.read_csv(input_raw_stats, sep = "\t")
+	
+		is_R1_mask = df['Sample'].str.contains('R1') 
+		df = renameReads(df, "raw_reads_failed")
+		cut_samples = {sample : 
+					  sample.replace("_L001_R1_001", "_R1") for sample in df["Sample"]}
+		df["Sample"].replace(cut_samples, inplace = True)
+				       
+		# Trimmed data stats
+		input_trimmed_stats = os.path.join(self.getFolder("QC_trimmed_M"),
+										   "multiqc_data",
+										   "multiqc_general_stats.txt") 
+		t_df = pd.read_csv(input_trimmed_stats, sep = "\t")
+		t_df = renameReads(t_df, "trimmed_reads_failed")
+		df = pd.merge(df, t_df, on="Sample")
+
+		assem_data = []
+		if self.assembler == "Trinity":
+			for sample_name, norm_reads in self.getTrinityNormReads():
+					assem_data.append({"Sample": f"{sample_name}_R1",
+									   "normalised_reads" : norm_reads})
+		a_df = pd.DataFrame(assem_data)
+		df = pd.merge(df, a_df, on="Sample")
+
+		# Output stats
+		out_dir = self.getFolder("results")
+		out_stats = os.path.join(out_dir, "Angua_stats.tsv")
+		with open(out_stats, "w") as stats_out:
+			df.to_csv(stats_out, sep = "\t")
+				
+	def getTrinityNormReads(self):
+			for file in self.getFiles("contigs", ".log"):
+				sample_name = getSampleName(file)
+				with open(file, "r") as trinity_log_in:
+					for line in trinity_log_in:
+						if "reads selected during normalization" in line:
+							line = line.strip()
+							norm_reads = line.split(" ")[0]
+							yield sample_name, norm_reads
+	
+	def document_env(self, script_name: str, script_version: float, input_params):
+		# Report the arguments used to run the program
+		# Report the environemnt the program was run in
+
+		LOG.info(f"Printing {script_name} pipeline version information")
+		out_log = os.path.join(self.getFolder("out"),
+								f"{script_name}Pipeline_params.txt")
+		env_out = os.path.join(self.getFolder("out"),
+							   f"{script_name}_env.txt")
+		with open(out_log, "w") as log_output:
+			log_output.write(f"{script_name} Pipeline Version: {script_version}\n")
+			log_output.write(f"Datetime: {datetime.datetime.now()}\n")
+			log_output.write(f"Parameters:\n")
+			for arg in vars(input_params):
+				log_output.write(f"{arg} {getattr(input_params, arg)}\n")
+		with open(env_out, "w") as txt:
+			subprocess.run(["conda", "list"], stdout = txt)
+
+class taxaFinder(fileHandler):
+	def find_taxa(self, hmm, size):
+		for file in self.getFiles("in", ".fasta"):
+			sample_name = getSampleName(file)
+			sample_out = os.path.join(self.getFolder("out"),
+									  sample_name)
+
+			# Run nhmmer
+			runNhmmer(sample_out, hmm, file)
+			
+			# Parse table output
+			with open(f"{sample_out}.tbl") as nhmmer_tbl:
+				with open(f"{sample_out}.bed", "w+") as bed_out:
+					for line in nhmmer_tbl:
+						if(line.startswith("#")):
+							next(nhmmer_tbl)
+						else:
+							contig_ID = line.split()[0]
+							start = line.split()[6]
+							end = line.split()[7]
+							if(int(line.split()[6]) > int(line.split()[7])):
+								start = line.split()[7]
+								end = line.split()[6]
+							if(int(end) - int(start) > int(size)):
+								bed_out.write(f"{contig_ID}	{start}	{end}\n")
+					bedtoolsWriteFasta(sample_out, file)
+				os.rename(f"{file}.fai", f"{sample_out}.fasta.fai")
+
+class backMapper(blastParser):
+	def runBwa(self, threads, mapq, flag):
+		all_R1 = (file for file in os.listdir(self.getFolder("trimmed"))
+                       if "R1" in file)
+		for R1 in all_R1:	
+			sample_name = getSampleName(R1, extend=1)
+			both_reads = self.findFastaBySample(sample_name, dir_kind = "trimmed")
+			tmp_dir = self.extendFolder("trimmed", "tmp_dir", "tmp")
+			tmp_out = [os.path.join(tmp_dir, os.path.basename(read)) for read in both_reads]
+			for r_in, r_out in zip(both_reads, tmp_out):
+				shutil.copyfile(r_in, r_out)
+			super().runBwaTS(tmp_dir, "ref", 0, threads, mapq, flag, text_search = False)
+			shutil.rmtree(tmp_dir)
+
 def main():
 	angua_version = 3
 	options = parse_arguments()
 
 	### Main Pipeline
 	if(sys.argv[1] == "main"):
-		angua = Angua("out", options.output)
-		if not options.no_qc:
-			angua.pre_qc_checks(options.qc_threads, raw_dir = options.in_dir)
+		angua = Angua("out", os.path.abspath(options.output))
+		angua.addFolder("raw", os.path.abspath(options.input))
+		if not options.noqc:
+			angua.extendFolder("out", "QC", "QC")
+			angua.extendFolderMultiple("QC", ["pre_qc", "post_qc"],
+											 ["Raw", "Trimmed"])
+			angua.extendFolderMultiple("pre_qc", ["QC_raw_F", "QC_raw_M"],
+												 ["FastQC", "MultiQC"])
+			angua.run_pre_qc(options.qc_threads)
 		
 		if options.bbduk_adapters:
-			run_bbduk(options.bbduk_minl, options.bbduk_adapters, options.bbduk_q
-					  raw_dir = options.in_dir)
-			if not options.no_qc:
-				angua.post_qc_checks(options.qc_threads)
+			angua.extendFolder("out", "bbduk", "Bbduk")
+			angua.run_bbduk(options.bbduk_minl, options.bbduk_adapters, 
+							options.bbduk_q)
+			if not options.noqc:
+				angua.extendFolderMultiple("post_qc", ["QC_trimmed_F", "QC_trimmed_M"],
+													  ["FastQC", "MultiQC"])
+				angua.run_post_qc(options.qc_threads)
 		
-		if options.assembler:
-			if options.assembler.upper() == "TRINITY":
-				angua.run_trinity(options.trinity_mem, options.trinity_cpu)
+		if options.assembler != "N":
+			if options.assembler == "trinity":
+				angua.extendFolder("out", "contigs", "Trinity")
+				LOG.info(angua.run_trinity(options.trinity_mem, 
+										   options.trinity_cpu))
 		
 		if not options.sort:
 			options.sort = [200, 1000]
@@ -230,234 +461,71 @@ def main():
 			angua.sort_fasta_by_length(num)
 		
 		if options.cluster:
-			angua.cluster_fasta(f"sorted_{max(options.sort)}", options.cluster_perc, options.cluster_threads)
+			angua.extendFolder("out", "mmseqs2", "mmseqs2")
+			angua.run_mmseqs2(f"sorted_{max(options.sort)}", 
+							  options.cluster_perc, 
+							  options.cluster_threads)
 		
 		if options.unmapped:
 			angua.get_unmapped(max(options.sort), options.bwa_threads, options.min_alignment)
 			angua.cluster_fasta("reads_out", options.cluster_perc, options.cluster_threads)
-			blastn_unmapped = Blast(f"{options.output}/Unmapped/Mmseqs2/", f"{options.output}/Unmapped/Blastn/", "blastn", options.blast_pool, "blastn", "megablast", options.ictv_db, options.blastn_threads, options.blast_descriptions, options.blast_alignments, "qualified", ".fasta")
+			#I am leaving Sam's code untouched as I can't quite 
+			#work out how to refactor this at this exact moment!
+			blastn_unmapped = Blast(f"{options.output}/Unmapped/Mmseqs2/", 
+									f"{options.output}/Unmapped/Blastn/", 
+									"blastn", options.blast_pool, 
+									"blastn", "megablast", 
+									options.ictv_db, 
+									options.blastn_threads,
+									options.blast_alignments, 
+									"qualified", ".fasta")
 			blastn_unmapped.run_blast_parallel()
-			text_search(f"{options.output}/Unmapped/Blastn/", f"{options.output}/Results/", "Unmapped_reads_viruses", "", options.min_alignment)
+
 		if options.nt_db:
-			blastn = Blast(f"{options.output}/Contigs/200/", f"{options.output}/Blastn/", "blastn", options.blast_pool, "blastn", "megablast", options.nt_db, options.blastn_threads, options.blast_descriptions, options.blast_alignments, "single", ".fasta")
-			blastn.run_blast_parallel()
-		if options.megan_blastn == "Y":
-			run_megan(f"{options.output}/Blastn/", f"{options.output}/Megan/Blastn/", "BlastN", f"{options.output}/Contigs/200/", options.megan_na2t)
-		if options.blastx == "Y":
-			blastx = Blast(f"{options.output}/Mmseqs2/", f"{options.output}/Blastx/", "blastx", options.blast_pool, "blastx", "blastx", options.nr_db, options.blastx_threads, options.blast_descriptions, options.blast_alignments, "qualified", ".fasta")
-			blastx.run_blast_parallel()
-		if options.megan_blastx == "Y":
-			run_megan(f"{options.output}/Blastx/", f"{options.output}/Megan/Blastx/", "BlastX", f"{options.output}/Mmseqs2/", options.megan_pa2t)
-		if options.stats == "Y":
-			stats(f"{options.output}/QC/raw/MultiQC/multiqc_data/multiqc_general_stats.txt", f"{options.output}/QC/trimmed/MultiQC/multiqc_data/multiqc_general_stats.txt", ".", f"{options.output}/Trinity/", f"{options.output}/Results/")
-		if options.doc_env == "Y":
-			document_env("Angua", angua_version, options.output, options)
+			out_dir = angua.extendFolder("out", "blastn", "BlastN")
+			angua.run_blastn(options)
+		
+		if options.megan_na2t:
+			angua.extendFolder("out", "megan", "Megan")
+			blastn = angua.extendFolder("megan", "megan_blastn", "BlastN")
+			finished = os.path.join(blastn, "megan_blastn.finished")
+			if not os.path.exists(finished):
+				angua.run_megan("BlastN", options.megan_na2t)
+				Path(finished).touch()
+							
+		if options.nr_db:
+			out_dir = angua.extendFolder("out", "blastx", "BlastX")
+			angua.run_blastx(options)
+			
+		if options.megan_pa2t:
+			angua.extendFolder("out", "megan", "Megan")
+			blastx = angua.extendFolder("megan", "megan_blastx", "BlastX")
+			finished = os.path.join(blastx, "megan_blastx.finished")
+			if not os.path.exists(finished):
+				angua.run_megan("BlastX", options.megan_pa2t)
+				Path(finished).touch()
+			
+		if not options.no_stats:
+			angua.extendFolder("out", "results", "Results")
+			angua.stats()
+		if not options.no_doc_env:
+			angua.document_env("Angua", angua_version, options)
 
 	### Plant-Finder Pipeline
 	elif(sys.argv[1] == "taxa-finder"):
 		
-		# Directory list to create
-		dirs = ["Taxa-Finder"]
-
-		if options.create_dirs == "Y":
-			create_dirs(options.output, dirs)
-
-		if options.find_taxa == "Y":
-			find_taxa(options.input, options.output, options.hmm, options.hmm_min_length)
+		tf = taxaFinder("in", os.path.abspath(options.input))
+		tf.addFolder("out", os.path.abspath(options.output))
+		tf.find_taxa(options.hmm, options.hmm_min_length)
 
 	### Back-Mapper Pipeline
 	elif(sys.argv[1] == "back-mapper"):
-		
-		# Directory list to create
-		dirs = ["Back-Mapper"]
-
-		if options.create_dirs == "Y":
-			create_dirs(options.output, dirs)
-
-		if options.back_mapper == "Y":
-			back_mapper(options.input, f"{options.output}/Back-Mapper/", options.reference, options.threads, options.delim, options.mapq, options.flag, options.coverage)
-
-	### Taxa-Finder Pipeline
-	elif(sys.argv[1] == "text-searcher"):
-
-		# Directory list to create
-		dirs = ["Text-Searcher"]
-
-		if options.create_dirs == "Y":
-			create_dirs(options.output, dirs)
-
-		if options.text_searcher == "Y":
-			text_search(options.input, f"{options.output}/Text-Searcher/", options.output_filename ,options.search_term, options.min_alignment)
-			
-################################################################################
-def run_megan(input_dir, output_dir, mode, reads, a2t):
-
-	input_files = looper(input_dir, "single", ".fasta")
-
-	for file in input_files:
-		input_file = f"{input_dir}/{file}"
-		input_reads = f"{reads}/{file.split('.')[0]}.fasta"
-
-		subprocess.call(f"blast2rma -i {input_file} -f BlastXML -bm {mode} -r {input_reads} -ms 75 -sup 1 -a2t {a2t} -o {output_dir}", shell = True)
-
-		print(f"Megan complete for sample: {file.split('.')[0]}")
-
-################################################################################
-def find_taxa(input_dir, output_dir, hmm, size):
-
-	input_files = looper(input_dir, "qualified", ".fasta")
-
-	for file in input_files:
-		sample_name = file.split(".")[0]
-		sample_in = f"{input_dir}/{file}"
-		sample_out = f"{output_dir}/Taxa-Finder/{sample_name}"
-
-		# Run nhmmer
-		subprocess.call(f"nhmmer -o {sample_out}.hmm --tblout {sample_out}.tbl {hmm} {sample_in}", shell = True)
-
-		# Parse table output
-		with open(f"{sample_out}.tbl") as nhmmer_tbl:
-			with open(f"{sample_out}.bed", "w") as bed_out:
-				for line in nhmmer_tbl:
-					if(line.startswith("#")):
-						next(nhmmer_tbl)
-					else:
-						contig_ID = line.split()[0]
-						start = line.split()[6]
-						end = line.split()[7]
-
-						if(int(line.split()[6]) > int(line.split()[7])):
-							start = line.split()[7]
-							end = line.split()[6]
-
-						# Write output
-						if(int(end) - int(start) > int(size)):
-							bed_out.write(f"{contig_ID}	{start}	{end}\n")
-
-			# Write fasta
-			subprocess.call(f"bedtools getfasta -s -fo {sample_out}.fasta -fi {sample_in} -bed {sample_out}.bed", shell = True)
-
-			# Move index file
-			os.rename(f"{sample_in}.fai", f"{sample_out}.fasta.fai")
-
-################################################################################
-def back_mapper(input_dir, output_dir, reference, threads, delim, mapq, flag, coverage):
-
-	with open(reference) as ref_fasta:
-		seq_count = 0
-		for line in ref_fasta:
-			if(">" in line):
-				seq_count += 1
-
-		if(seq_count > 1):
-			print("WARNING")
-			print("Multiple sequences detected in the reference fasta file. Please ensure that each reference file represents ONE DISTINCT genome.")
-			print("If multiple genomes are used in a single reference file, then reads that align equally well will ONLY be assigned to a single reference.")
-			print("This can and will skew the mapping results.")
-			print("Consider using the --flag 0 option to correct this.")
-
-
-	input_files = looper(input_dir, "qualified", "_R1")
-
-	# Index reference
-	# subprocess.call(f"bwa-mem2 index {reference}", shell = True)
-
-	for file in input_files:
-		sample_ID = file.split(delim)[0]
-		Path(output_dir, sample_ID).mkdir(exist_ok = True, parents = True)
-		fileR2 = file.replace("_R1", "_R2")
-
-		# Index reference
-		subprocess.call(f"bwa-mem2 index {reference}", shell = True)
-
-		if os.path.isfile(f"{input_dir}/{file}"):
-			r1_in = f"{input_dir}/{file}"
-			r2_in = f"{input_dir}/{fileR2}"
-			sample_out = f"{output_dir}/{sample_ID}/"
-
-			# Map raw reads
-			subprocess.call(f"bwa-mem2 mem -t {threads} {reference} {r1_in} {r2_in} > {sample_out}{sample_ID}.sam", shell = True)
-			subprocess.call(f"samtools view -q {mapq} -F {flag} -bS {sample_out}/{sample_ID}.sam > {sample_out}{sample_ID}.bam", shell = True)
-			subprocess.call(f"samtools sort {sample_out}/{sample_ID}.bam > {sample_out}{sample_ID}_sort.bam", shell = True)
-			subprocess.call(f"samtools index {sample_out}{sample_ID}_sort.bam", shell = True)
-			subprocess.call(f"samtools idxstats {sample_out}{sample_ID}_sort.bam > {sample_out}{sample_ID}_stats.txt", shell = True)
-
-			# Calculate Coverage
-			if coverage == "Y":
-				subprocess.call(f"average-coverage.py {sample_out}{sample_ID}_sort.bam -o {sample_out}{sample_ID}_coverage.tsv", shell = True)
-
-	print("Back mapping completed.")
-
-################################################################################
-def stats(input_raw_stats, input_trimmed_stats, qualifier, normalised_reads_dir, output_dir):
-
-	sample_dict = {}
-
-	# Raw data stats
-	with open(input_raw_stats) as raw_in:
-		next(raw_in)
-		for line in raw_in:
-			line = line.strip()
-			sample_id = line.split("\t")[0]
-			reads = line.split("\t")[5]
-			if "_R1" in sample_id:
-				sample_name = sample_id.split("_L")[0]
-				sample_dict[sample_name] = []
-				sample_dict[sample_name].append(reads)
-
-	# Trimmed data stats
-	with open(input_trimmed_stats) as trimmed_in:
-		next(trimmed_in)
-		for line in trimmed_in:
-			line = line.strip()
-			sample_id = line.split("\t")[0]
-			reads = line.split("\t")[5]
-			if "_R1" in sample_id:
-				sample_name = sample_id.split("_R")[0]
-				sample_dict[sample_name].append(reads)
-
-	# Normalisation stats
-	input_files = looper(normalised_reads_dir, "qualified", ".log")
-
-	for file in input_files:
-		input_file = f"{normalised_reads_dir}/{file}"
-		sample_name = file.split(".")[0]
-
-		with open(input_file) as trinity_log_in:
-			for line in trinity_log_in:
-				if "reads selected during normalization" in line:
-					line = line.strip()
-					norm_reads = line.split(" ")[0]
-					sample_dict[sample_name].append(norm_reads)
-	
-	# Output stats
-	with open(f"{output_dir}/Angua_stats.tsv", "w") as stats_out:
-		stats_out.write("Sample	Raw_reads	Trimmed_reads	Normalised_reads	Normalised_reads_percentage\n")
-		for sample in sample_dict:
-			stats_out.write(f"{sample}	{'	'.join(sample_dict[sample])}	{(float(sample_dict[sample][2]) / float(sample_dict[sample][1])) * 100}\n")
-
-	# Output results template
-	with open(f"{output_dir}/Angua_results.tsv", "w") as results_out:
-		results_out.write("Sample	Blastn	Blastn_notes	Blastx	Blastx_notes\n")
-		for sample in sample_dict:
-			results_out.write(f"{sample}\n")
-
-################################################################################
-def document_env(script_name, script_version, output_dir, input_params):
-	# Report the arguments used to run the program
-	# Report the environemnt the program was run in
-
-	print(f"Printing {script_name} pipeline version information")
-	with open(f"{output_dir}/{script_name}Pipeline_params.txt", "w") as log_output:
-		log_output.write(f"{script_name} Pipeline Version: {script_version}\n")
-		log_output.write(f"Datetime: {datetime.datetime.now()}\n")
-		log_output.write(f"Parameters:\n")
-		for arg in vars(input_params):
-			log_output.write(f"{arg} {getattr(input_params, arg)}\n")
-	subprocess.call(f"conda list > {output_dir}/{script_name}_env.txt", shell = True)
-
-################################################################################
-
+		#Atm this hooks into some functions blastParser has. Which feels hacky but it works.
+		bm = backMapper("out", os.path.abspath(options.output))
+		bm.addFolder("ref", os.path.abspath(options.input))
+		bm.addFolder("trimmed", os.path.abspath(options.trimmed))
+		bm.runBwa(options.threads, options.mapq, options.flag)
+						  
 ################################################################################
 def parse_arguments():
 	parser = argparse.ArgumentParser(prog = "Angua", 
@@ -474,10 +542,10 @@ def parse_arguments():
 	### Main Pipeline
 
 	# Key arguments
-	main.add_argument("--input", 
-					  help = "Path to raw data directory.", required = True)
-	main.add_argument("--output", 
-					  help = "Directory where output data will be generated.", required = True)
+	main.add_argument("input", 
+					  help = "Path to raw data directory.")
+	main.add_argument("output", 
+					  help = "Directory where output data will be generated.")
 	main.add_argument("--nt_db", 
 					  help = "Path to the nt database.")
 	main.add_argument("--nr_db", 
@@ -485,25 +553,22 @@ def parse_arguments():
 	main.add_argument("--ictv_db", 
 					  help = "Path to the ICTV nucleotide database generated by makeICTVDB.")
 	
-	main.add_argument("-mn2t", "--megan_na2t", 
+	main.add_argument("-na2t", "--megan_na2t", 
 					  help = "Path to the megan nucl_acc2tax file.")
-	main.add_argument("-mp2t", "--megan_pa2t", 
+	main.add_argument("-pa2t", "--megan_pa2t", 
 					  help = "Path to the megan prot_acc2tax file.")
 
 	# Extra arguments, useful for if a specific job has failed and you don't want to start from scratch
 
-	main.add_argument("-nodir", "--create_dirs_off", 
-					  help = "Suppress creating directory structure.",
-					  action = "store_true")
 	main.add_argument("--noqc", 
 					  help = "Do not run FastQC and MultiQC.",
 					  action = "store_true")
 	main.add_argument("-a", "--assembler", 
 					  help = "Choice of assembler. 'N' skips assembly.", 
-					  choices = ["trinity"]
+					  choices = ["trinity"],
 					  default = "trinity")
 	main.add_argument("-s", "--sort",
-					  help = "Bins to sort contigs into. The highest will be used for Blastx, and the rest for Blastn, if these flags are set. Defaults to 200 and 1000."
+					  help = "Bins to sort contigs into. The highest will be used for Blastx, and the rest for Blastn, if these flags are set. Defaults to 200 and 1000.",
 					  nargs = "*",
 					  type = int)
 	main.add_argument("--cluster", 
@@ -517,7 +582,7 @@ def parse_arguments():
 					 help = "Do not generate read stats and results template.",
 					 action = "store_true")
 	main.add_argument("-nde", "--no_doc_env", 
-					  help = "Do not log environment and parameter details."
+					  help = "Do not log environment and parameter details.",
 					  action = "store_true")
 
 	# Tool specific parameters
@@ -564,15 +629,12 @@ def parse_arguments():
 	main.add_argument("-blp", "--blast_pool", 
 					  help = "TMaximum number of blast processes allowed in the pool at any one time. Default 8.",
 					  default = 8)
-	main.add_argument("blt", "--blastn_threads", 
+	main.add_argument("-blt", "--blastn_threads", 
 					  help = "Number of threads used for each blastn process. Default 16.", 
 					  default = 16)
 	main.add_argument("-blxt", "--blastx_threads", 
 					  help = "Number of threads used for running blastx. Default 130.", 
 					  default = 130)
-	main.add_argument("-bld", "--blast_descriptions", 
-					  help = "Number of descriptions shown. Default 25.", 
-					  default = 25)
 	main.add_argument("-bla", "--blast_alignments", 
 					  help = "Number of alignments shown. Default 25.", 
 					  default = 25)
@@ -581,26 +643,17 @@ def parse_arguments():
 	### Taxa-finder Pipeline
 
 	# Key arguments
-	taxa_finder.add_argument("--input", 
-							 help = "Location of the contig directory.", 
-							 required = True)
-	taxa_finder.add_argument("--output", 
-							help = "Location of the output directory.", 
-							 required = True)
+	taxa_finder.add_argument("input", 
+							 help = "Location of the contig directory.")
+	taxa_finder.add_argument("output", 
+							help = "Location of the output directory.")
 	taxa_finder.add_argument("--hmm", 
 							 help = "Location of input hmm file.",
 							 required = True)
-
-	taxa_finder.add_argument("-nodir", "--create_dirs_off", 
-							 help = "Suppress creation of directory structure.", 
-							 action = "store_true")
-	taxa_finder.add_argument("--find_taxa", 
-							 help = "Runs the specified HMM and extracts fasta files. Default true.",
-							 action = "store_true")
-
+							 
 	# Tool specific parameters
 
-	taxa_finder.add_argument("--hmm_min_length", 
+	taxa_finder.add_argument("-hmmml", "--hmm_min_length", 
 							 help = "Determine the minimum size for a sequence to be retrieved from the HMM search. Default 500.", 
 							 default = 500)
 
@@ -608,33 +661,27 @@ def parse_arguments():
 	### Back-Mapper Pipeline
 
 	# Key arguments
-	back_mapper.add_argument("--input", 
-							help = "Location of the input directory.", 
-							required = True)
-	back_mapper.add_argument("--output", 
-							 help = "Location of the output directory.", 
-							 required = True)
-	back_mapper.add_argument("--reference", 
-							 help = "Location of reference fasta file.", 
-							 required = True)
-
-	back_mapper.add_argument("-nodir", "--create_dirs_off", 
-							 help = "Suppress creation of directory structure.", 
-							 action = "store_true")
-	back_mapper.add_argument("-nocov", "--no_coverage", 
-							 help = "Suppress generating coverage output.", 
-							 action = "store_true")
+	back_mapper.add_argument("input", 
+							help = "Location of the input directory.")
+	back_mapper.add_argument("trimmed", 
+							 help = "Location of reference fasta file.")
+	back_mapper.add_argument("output", 
+							 help = "Location of the output directory.")
 
 	# Extra arguments
-	back_mapper.add_argument("--threads", help = "Number of threads to use. Default is 23.", default = round(os.cpu_count() * 0.9))
-	back_mapper.add_argument("--delim", help = "What chatacter separates the ID from the rest of the filename. Default is an underscore.", default = "_")
-	back_mapper.add_argument("--mapq", help = "Filter reads with a MAPQ of >= X. Default is 0", default = 0)
-	back_mapper.add_argument("--flag", help = "Filter reads with the specified samflag. Default is 2304", default = 2304)
+	back_mapper.add_argument("-t", "--threads", 
+							 help = "Number of threads to use. Default is 23.", 
+							 default = round(os.cpu_count() * 0.9))
+	back_mapper.add_argument("-mq", "--mapq", 
+							 help = "Filter reads with a MAPQ of >= X. Default is 0", 
+							 default = 0)
+	back_mapper.add_argument("-f", "--flag", 
+							 help = "Filter reads with the specified samflag. Default is 2304", 
+							 default = 2304)
 
-	################################################################################
 	return parser.parse_args()
 
 ################################################################################
 
 if __name__ == '__main__':
-	main()
+	sys.exit(main())
