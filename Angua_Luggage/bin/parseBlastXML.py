@@ -12,13 +12,11 @@ from pkg_resources import resource_filename
 
 #logging_conf = resource_filename("Angua_Luggage", "data/logging.conf")
 #logging.config.fileConfig(logging_conf)
-logging.basicConfig(stream = sys.stdout, level=logging.DEBUG)
+logging.basicConfig(stream = sys.stdout, level=logging.INFO)
 LOG = logging.getLogger(__name__)
 
 def parseArguments():
     parser = argparse.ArgumentParser(description = "Runs 'text search'.")
-    #Consider .add_mutually_exclusive_group for fastas and nofull.
-    #Probably worth breaking into subcommands by now nd running those from main.
     
     #REQUIRED
     parser.add_argument("in_dir",
@@ -28,8 +26,7 @@ def parseArguments():
     
     #INPUT_FILES
     parser.add_argument("-c", "--contigs",
-                        help = ".fasta file containing the contigs used for the Blast query, if you'd like the reads extracted.",
-                        default = False)
+                        help = ".fasta file containing the contigs used for the Blast query, if you'd like the reads extracted.")
     parser.add_argument("-r", "--raw",
                         help = "Directory of raw reads if bwa is desired. (For single-ended reads blasts.)")
     
@@ -44,7 +41,7 @@ def parseArguments():
                         help = "Output NCBI matches as fastas (for bwa etc.).",
                         action = "store_true")
     parser.add_argument("-bt", "--blast_type",
-                        help = "Type of blast used. N, P or X.",
+                        help = "Type of blast used. N, P or X. Default N.",
                         default = "N")
                         
     #SEARCH_PARAMS
@@ -59,13 +56,13 @@ def parseArguments():
                                 help = "Minimum bitscore to filter on. Default 0 i.e. returns all hits.",
                                 type = int, default = 50)
     search_params.add_argument("-bl", "--blacklist",
-                                help = "Text to exclude from in the Blast output. Input a .txt file one item per line to exclude multiple terms.",
+                                help = "Text to exclude from in the Blast output. Default PHAGE. Input a .txt file one item per line to exclude multiple terms.",
                                 default = "phage")
                         
     parser.add_argument("-e", "--email",
                         help = "Entrez email for NCBI fetching. Required if using NCBI to get accessions.")
     parser.add_argument("-ex", "--extend",
-                        help = "Number of underscores to remove from sample names.",
+                        help = "Number of underscores to remove from the right of sample names.",
                         type = int, default = 1)
     return parser.parse_args()
 
@@ -75,10 +72,8 @@ def getTerms(text_file: str) -> list:
         return [term.upper() for term in data.split("\n") if term != ""]
 
 def runTextSearch(handler, args):
-    whl = getTerms(args.searchterm) if args.searchterm.endswith(".txt") else list(
-                   args.searchterm)
-    bl = getTerms(args.blacklist) if args.blacklist.endswith(".txt") else list(
-                  args.blacklist)
+    whl = getTerms(args.searchterm) if args.searchterm.endswith(".txt") else [args.searchterm]
+    bl = getTerms(args.blacklist) if args.blacklist.endswith(".txt") else [args.blacklist]
     handler.findBlastFiles(ictv = args.ictv, blast_type = args.blast_type)
         
     queries_parsed, hits = handler.parseAlignments(search_params = 

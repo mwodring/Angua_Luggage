@@ -486,6 +486,7 @@ class blastTool(Tool):
         accession = alignment.hit_id.split("|")[splitnum]        
         #Unused for now - gb is genbank, ref is refseq.
         #db_type = alignment.hit_id.split("|")[0]
+        LOG.debug(alignment.hit_def)
         return (alignment.hit_def, coverage, identity, 
                 query.query_length, query.query,
                 accession, frame[0], hsp.query, ungapped, hsp.bits)
