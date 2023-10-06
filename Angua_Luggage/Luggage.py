@@ -283,9 +283,6 @@ class toolBelt():
                         tool.output(fa)
     
     def migrateFasta(self, in_file: str, out_file: str):
-        print(in_file)
-        print(self.tools["fasta"])
-        quit()
         tools = self.tools["fasta"][in_file]
         with open(out_file, "a") as fa:
             for tool in tools:

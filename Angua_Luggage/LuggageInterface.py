@@ -3,7 +3,7 @@ from .utils import getSampleName, Cleanup, subSeqName
 from .exec_utils import *
 import json, importlib.resources
 from . import data
-import os, traceback, sys
+import os, traceback, sys, shutil
 
 LOG = logging.getLogger(__name__)
 LOG.addHandler(logging.NullHandler())
@@ -284,7 +284,7 @@ class rmaHandler(blastParser):
                                       sample_name)
         
 class spadesTidy(fileHandler):
-    def spadesToDir(self, out_dir: str):
+    def spadesToDir(self, out_dir: str, cleanup = False):
         in_dir = self.getFolder("in")
         self.addFolder("out", out_dir)
         for item in os.listdir(in_dir):
@@ -299,3 +299,21 @@ class spadesTidy(fileHandler):
                                                   new_fasta_name)
                     self.addFastaFile(scaffolds)
                     self._toolBelt.migrateFasta(scaffolds, new_fasta_file)
+                if cleanup:
+                    shutil.rmtree(item_abs)
+                    
+class dbMaker(fileHandler):
+    def fetchEntrezFastas(self, id_list: list[str], email: str, api):
+        out_dir = self.getFolder("fastas")
+        self.fasta = os.path.join(out_dir, "ICTV_db_fastas.fasta" )
+        handle = fetchEntrez(id_list, email = email, api = api)
+        if handle:
+            sequences = SeqIO.parse(handle, "fasta")
+            with open(self.fasta, "w+") as fa:
+                #SeqIO returns the count when it works, which is handy.
+                count = SeqIO.write(sequences, fa, "fasta")
+                LOG.info(f"{count} sequences found and written from ICTV db.")
+                self.addFastaFile(self.fasta)
+    
+    def makeBlastDb(self, db_name = "vir"):
+        runMakeblastdb(self.fasta, db_name)

@@ -16,7 +16,7 @@ from Bio.Blast import NCBIXML
 from .Luggage import fileHandler, toolBelt
 from .exec_utils import *
 from .utils import *
-from .LuggageInterface import blastParser
+from .LuggageInterface import blastParser, spadesTidy
 
 from collections.abc import Generator
 
@@ -83,7 +83,8 @@ class Angua(fileHandler):
 		@functools.wraps(func)
 		def wrapper_check_complete(self, *args, **kwargs):
 			stage = "_".join(func.__name__.split("_")[1:])
-			finished_file = os.path.join(self.getFolder(stage), f"{stage}.finished")
+			finished_dir = self.getFolder(kwargs.get("out_dir", stage))
+			finished_file = os.path.join(finished_dir, f"{stage}.finished")
 			if os.path.exists(finished_file):
 				LOG.info(f"{stage} already complete, skipping!")
 			else:
@@ -156,7 +157,6 @@ class Angua(fileHandler):
 		else:
 			return
 		
-	#I can probably use a function to set up the _R2 files since this repeatd the above.
 	def run_trinity(self, mem: str, threads: int):
 		self.assembler = "Trinity"
 		finished_file = os.path.join(self.getFolder("contigs"), 
@@ -172,7 +172,10 @@ class Angua(fileHandler):
 										  base_R1.replace("_R1", "_trinity"))
 			trinity_log = trinity_output.replace("_trinity", ".log")
 			LOG.info(f"Running Trinity on {getSampleName(file_R1, extend=1)}.")
-			log = runTrinity(file_R1, file_R2,
+			in_reads = [file_R1]
+			if os.path.exists(file_R2):
+				in_reads.append(file_R2)
+			log = runTrinity(in_reads,
 							 trinity_output, mem, threads)
 			with open(trinity_log, "wb") as tlog:
 				tlog.write(log)
@@ -184,6 +187,25 @@ class Angua(fileHandler):
 			Path(finished_file).touch()
 			return "Trinity complete."
 	
+	def run_spades(self):
+		self.assembler = "Spades"
+		finished_file = os.path.join(self.getFolder("contigs"), 
+													"Spades.finished")
+		if os.path.exists(finished_file):
+			return ("Spades already completed, skipping.")
+		for file_R1 in self.getFiles("bbduk", "_R1.fastq.gz"):
+			in_reads = [file_R1]
+			file_R2 = file_R1.replace("_R1", "_R2")
+			if os.path.exists(file_R2):
+				in_reads.append(file_R2)
+			sample_name = getSampleName(file_R1)
+			out_dir = self.extendFolder("contigs", sample_name, sample_name)
+			runSpades(in_reads, out_dir)
+		tidy = spadesTidy("in", self.getFolder("contigs"))
+		tidy.spadesToDir(self.getFolder("contigs"), cleanup = True)
+		Path(finished_file).touch()
+		return "Spades complete."
+		
 	### Sort and rename contigs
 	def sort_fasta_by_length(self, min_len: int):
 		out = self.extendFolder("contigs", f"sorted_{min_len}", str(min_len))
@@ -194,9 +216,9 @@ class Angua(fileHandler):
 			self._toolBelt.filterFasta(file, output_file, "len", min_len)
 	
 	@check_complete
-	def run_mmseqs2(self, dir_kind: str, perc, threads: int) -> int:
-		if not self.getFolder(dir_kind):
-			dir_kind = "cluster_in"
+	def run_mmseqs2(self, perc, threads: int, in_dir = None,
+											  out_dir = None) -> int:
+		dir_kind = "cluster_in" if not in_dir else in_dir
 		if not self.getFolder("mmseqs2"):
 			out_dir = self.extendFolder(dir_kind, "mmseqs2", "Mmseqs2")
 		else:
@@ -217,74 +239,32 @@ class Angua(fileHandler):
 		return 1
 		
 	@check_complete
-	def get_unmapped(self, min_len: int, min_alignment_len: int, 
-						   threads: int) -> int:
-		for file in self.getFiles("bbduk", ".fasta"):
-			sample_name = getSampleName(file, extend=1)
-			self.extendFolder("out", "unmapped", "Unmapped")
-			current_bwa_dir = self.extendFolder("unmapped", 
-												"bwa_current", 
-												sample_name)
-			shutil.copy(file, current_bwa_dir)
-			input_file = os.path.join(current_bwa_dir, file)
-			sam_file = os.path.join(current_bwa_dir, f"{sample_name}_sort.sam")
-
-			raw_reads = findRawBySample(sample_name)
-
-			# Index reference
-			runBwa(input_file, raw_reads, sam_file)
-
-			# BWA and samtools
-			sort_file = samToIndexedBam(in_sam = sam_file, 
-										out_sam = os.path.join(current_bwa_dir, 
-										f"{sample_name}.bam"))
-
-			# Pysam
-			reads_dir = self.extendFolder("unmapped", "reads_out", "Reads")
-			bamfile = pysam.AlignmentFile(sort_file, "rb")
-			with open(os.path.join(reads_dir, f"{sample_name}.fasta"), "w") as outfile:
-				for read in bamfile.fetch(until_eof = True):
-					try:
-						if read.query_alignment_length >= (int(read.infer_read_length()) / 3):
-							if read.query_alignment_length >= int(min_alignment_len):
-								good += 1
-							else:
-								outfile.write(f">{read.query_name}\n")
-								outfile.write(f"{read.query_sequence}\n")
-						else:
-							outfile.write(f">{read.query_name}\n")
-							outfile.write(f"{read.query_sequence}\n")
-					except:
-						outfile.write(f">{read.query_name}\n")
-						outfile.write(f"{read.query_sequence}\n")
-
-			# Close file
-			bamfile.close()
-		return 1
-	
-	@check_complete
-	def run_blastn(self, options) -> int:
-		in_dir = self.getContigsSorted("min")
+	def run_blastn(self, options, in_dir = None, out_dir = None, ictv = False) -> int:
+		in_dir = self.getContigsSorted("min") if not in_dir else self.getFolder(in_dir)
+		out_dir = self.getFolder("blastn") if not out_dir else self.getFolder(out_dir)
+		db = options.nt_db if not ictv else options.ictv
 		blastn = Blast([os.path.join(in_dir, file) for file in os.listdir(in_dir) if file.endswith(".fasta")], 
-					   self.getFolder("blastn"), 
+					   out_dir, 
 					   "blastn", options.blast_pool, 
 					   "blastn", "megablast", 
-					   options.nt_db, 
+					   db, 
 					   options.blastn_threads,
 					   options.blast_alignments)
 		blastn.run_blast_parallel()
 		return 1
 			
 	@check_complete
-	def run_blastx(self, options) -> int:
+	def run_blastx(self, options, in_dir = None, out_dir = None) -> int:
 		mmseqs2 = self.getFolder("mmseqs2")
-		if mmseqs2:
+		if mmseqs2 and not in_dir:
 			in_files = [file for file in self.getFiles("mmseqs2", ".fasta")]
-		else:
+		elif not mmseqs2 and not in_dir:
 			in_dir = self.getContigsSorted("max")
 			in_files = [os.path.join(in_dir, file) for file in os.listdir(in_dir) 
 						if file.endswith(".fasta")]
-		out_dir = self.getFolder("blastx")
+		elif in_dir:
+			in_files = [file for file in self.getFolder(in_dir)]
+		out_dir = self.getFolder("blastx") if not out_dir else self.getFolder(out_dir)
 		blastx = Blast(in_files, out_dir, 
 					   "blastx", options.blast_pool, 
 					   "blastx", "blastx", 
@@ -294,21 +274,28 @@ class Angua(fileHandler):
 		blastx.run_blast_parallel()
 		return 1
 	
-	def run_megan(self, blast_type: str, megan_db: str):
+	@check_complete
+	def run_megan(self, blast_type: str, megan_db: str, 
+						in_dir = None, out_dir = None, contigs_dir = None):
 		blast_lower = blast_type.lower()
-		in_dir = self.getFolder(blast_lower)
-		out_dir = self.getFolder(f"megan_{blast_lower}")
-		contigs = self.getContigsSorted("min") if blast_type == "BlastN" else self.getFolder("mmseqs2")
-		if not contigs:
-			contigs = self.getContigsSorted("max")
+		in_dir = self.getFolder(blast_lower) if not in_dir else self.getFolder(in_dir)
+		out_dir = self.getFolder(f"megan_{blast_lower}") if not out_dir else self.getFolder(out_dir)
+		if not contigs_dir:
+			contigs = self.getContigsSorted("min") if blast_type == "BlastN" else self.getFolder("mmseqs2")
+			if not contigs:
+				contigs = self.getContigsSorted("max")
+		else:
+			contigs = self.getFolder(in_dir)
 		self.addFolder("megan_in", contigs)
 		self.findFastaFiles("megan_in")
-		for file in self.getFiles(blast_lower, ".xml"):
+		files = (os.path.join(in_dir, file) for file in os.listdir(in_dir) if file.endswith(".xml"))
+		for file in files:
 			sample_name = getSampleName(file)
 			current_contigs = self._toolBelt.getToolsByName("fasta", sample_name)[0].filename
 			self._toolBelt.blast2Rma(file, out_dir, megan_db, 
 									 current_contigs, blast_type,
 									 sample_name)
+		return 1
 
 	def stats(self):
 		def renameReads(dataframe, new_name: str):
@@ -410,7 +397,7 @@ class taxaFinder(fileHandler):
 				os.rename(f"{file}.fai", f"{sample_out}.fasta.fai")
 
 class backMapper(blastParser):
-	def runBwa(self, threads, mapq, flag):
+	def runBwaTS(self, threads, mapq, flag):
 		all_R1 = (file for file in os.listdir(self.getFolder("trimmed"))
                        if "R1" in file)
 		for R1 in all_R1:	
@@ -453,6 +440,9 @@ def main():
 				angua.extendFolder("out", "contigs", "Trinity")
 				LOG.info(angua.run_trinity(options.trinity_mem, 
 										   options.trinity_cpu))
+			if options.assembler == "spades":
+				angua.extendFolder("out", "contigs", "Spades")
+				LOG.info(angua.run_spades())
 		
 		if not options.sort:
 			options.sort = [200, 1000]
@@ -462,25 +452,9 @@ def main():
 		
 		if options.cluster:
 			angua.extendFolder("out", "mmseqs2", "mmseqs2")
-			angua.run_mmseqs2(f"sorted_{max(options.sort)}", 
-							  options.cluster_perc, 
-							  options.cluster_threads)
-		
-		if options.unmapped:
-			angua.get_unmapped(max(options.sort), options.bwa_threads, options.min_alignment)
-			angua.cluster_fasta("reads_out", options.cluster_perc, options.cluster_threads)
-			#I am leaving Sam's code untouched as I can't quite 
-			#work out how to refactor this at this exact moment!
-			blastn_unmapped = Blast(f"{options.output}/Unmapped/Mmseqs2/", 
-									f"{options.output}/Unmapped/Blastn/", 
-									"blastn", options.blast_pool, 
-									"blastn", "megablast", 
-									options.ictv_db, 
-									options.blastn_threads,
-									options.blast_alignments, 
-									"qualified", ".fasta")
-			blastn_unmapped.run_blast_parallel()
-
+			angua.run_mmseqs2(options.cluster_perc, 
+							  options.cluster_threads,
+							  f"sorted_{max(options.sort)}")
 		if options.nt_db:
 			out_dir = angua.extendFolder("out", "blastn", "BlastN")
 			angua.run_blastn(options)
@@ -488,10 +462,7 @@ def main():
 		if options.megan_na2t:
 			angua.extendFolder("out", "megan", "Megan")
 			blastn = angua.extendFolder("megan", "megan_blastn", "BlastN")
-			finished = os.path.join(blastn, "megan_blastn.finished")
-			if not os.path.exists(finished):
-				angua.run_megan("BlastN", options.megan_na2t)
-				Path(finished).touch()
+			angua.run_megan("BlastN", options.megan_na2t)
 							
 		if options.nr_db:
 			out_dir = angua.extendFolder("out", "blastx", "BlastX")
@@ -500,10 +471,7 @@ def main():
 		if options.megan_pa2t:
 			angua.extendFolder("out", "megan", "Megan")
 			blastx = angua.extendFolder("megan", "megan_blastx", "BlastX")
-			finished = os.path.join(blastx, "megan_blastx.finished")
-			if not os.path.exists(finished):
-				angua.run_megan("BlastX", options.megan_pa2t)
-				Path(finished).touch()
+			angua.run_megan("BlastX", options.megan_pa2t)
 			
 		if not options.no_stats:
 			angua.extendFolder("out", "results", "Results")
@@ -524,7 +492,7 @@ def main():
 		bm = backMapper("out", os.path.abspath(options.output))
 		bm.addFolder("ref", os.path.abspath(options.input))
 		bm.addFolder("trimmed", os.path.abspath(options.trimmed))
-		bm.runBwa(options.threads, options.mapq, options.flag)
+		bm.runBwaTS(options.threads, options.mapq, options.flag)
 						  
 ################################################################################
 def parse_arguments():
@@ -536,7 +504,7 @@ def parse_arguments():
 	taxa_finder = subparsers.add_parser("taxa-finder", 
 										help = "Runs the taxa-finder pipeline. Requires a HMM file and directory of fasta files. nhmmer > bedtools")
 	back_mapper = subparsers.add_parser("back-mapper", 
-										help = "Runs the back-mapper pipeline. bwa-mem2 > samtools > bamtocov")
+										help = "Runs the back-mapper pipeline.")
 
 	################################################################################
 	### Main Pipeline
@@ -550,9 +518,7 @@ def parse_arguments():
 					  help = "Path to the nt database.")
 	main.add_argument("--nr_db", 
 					 help = "Path to the nr database.")
-	main.add_argument("--ictv_db", 
-					  help = "Path to the ICTV nucleotide database generated by makeICTVDB.")
-	
+
 	main.add_argument("-na2t", "--megan_na2t", 
 					  help = "Path to the megan nucl_acc2tax file.")
 	main.add_argument("-pa2t", "--megan_pa2t", 
@@ -565,7 +531,7 @@ def parse_arguments():
 					  action = "store_true")
 	main.add_argument("-a", "--assembler", 
 					  help = "Choice of assembler. 'N' skips assembly.", 
-					  choices = ["trinity"],
+					  choices = ["trinity", "spades"],
 					  default = "trinity")
 	main.add_argument("-s", "--sort",
 					  help = "Bins to sort contigs into. The highest will be used for Blastx, and the rest for Blastn, if these flags are set. Defaults to 200 and 1000.",
@@ -573,9 +539,6 @@ def parse_arguments():
 					  type = int)
 	main.add_argument("--cluster", 
 					  help = "Clusters the highest bin before Blastx.",
-					  action = "store_true")
-	main.add_argument("-um", "--unmapped", 
-					  help = "Extract unmapped and weak alignments, and looks for viruses.", 
 					  action = "store_true")
 
 	main.add_argument("-ns", "--no_stats", 
@@ -662,9 +625,9 @@ def parse_arguments():
 
 	# Key arguments
 	back_mapper.add_argument("input", 
-							help = "Location of the input directory.")
+							help = "Location of the input directory of reference files.")
 	back_mapper.add_argument("trimmed", 
-							 help = "Location of reference fasta file.")
+							 help = "Location of trimmed reads to map.")
 	back_mapper.add_argument("output", 
 							 help = "Location of the output directory.")
 

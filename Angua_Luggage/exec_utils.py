@@ -83,7 +83,7 @@ def runBedtools(out_file: str, bam: str):
 def runBwa(fa: str, bwa_reads: list[str], out_file: str, threads = 12):
     index_result = subprocess.run(["bwa-mem2", "index", fa], capture_output=True)
     LOG.info(index_result.stdout)
-    proc_call = ["bwa-mem2", "mem", "-v", "1", "-t", str(threads), fa]
+    proc_call = ["bwa-mem2", "mem", "-v", "3", "-t", str(threads), fa]
     proc_call.extend(bwa_reads)
     with open(out_file, "w+") as sam:
         subprocess.run(proc_call, stdout=sam)
@@ -91,7 +91,7 @@ def runBwa(fa: str, bwa_reads: list[str], out_file: str, threads = 12):
 def samSort(bam_file: str, sam_file: str, mapq: int, flag: int):
     with open(bam_file, "w+") as bam:
         subprocess.run(["samtools", "view", "-q", str(mapq), "-F", str(flag), 
-                          "-bS", sam_file], stdout = bam)
+                        "-bS", sam_file], stdout = bam)
     pysam.sort("-o", bam_file, bam_file)
     subprocess.run(["samtools", "index", bam_file])
     idx_txt_out = os.path.splitext(sam_file)[0] + "_stats.txt"
@@ -127,14 +127,16 @@ def runBbduk(in_R1: str, in_R2: str, out_R1: str, out_R2: str,
     f"minlen={min_len}", "ktrim=r", "k=23", "mink=11", "hdist=1",
     f"ref={adapters}", "qtrim=r", f"trimq={min_q}"])
    
-def runTrinity(in_R1: str, in_R2: str, out_file: str, mem: str, threads: int):
-    trinity_proc = subprocess.run(["Trinity", "--seqType", "fq", 
-                                   "--max_memory", mem,
-                                   "--left", in_R1, "--right", in_R2, 
-                                   "--CPU", str(threads), 
-                                   "--full_cleanup", 
-                                   "--output", out_file],
-                                   stdout = subprocess.PIPE)
+def runTrinity(in_reads: list[str], out_file: str, mem: str, threads: int):
+    args = ["Trinity", "--seqType", "fq", "--max_memory", mem]
+    if len(in_reads) > 1:
+        args.extend(["--left", in_reads[0], "--right", in_reads[1]])
+    else:
+        args.extend(["--single", in_reads[0]])
+    args.extend(["--CPU", str(threads), 
+                "--full_cleanup", 
+                "--output", out_file])
+    proc = subprocess.run(args, stdout = subprocess.PIPE)
     return trinity_proc.stdout
 
 def mmseqs2(in_file: str, output: str, perc, threads: int, tmp: str) -> None:
@@ -150,3 +152,15 @@ def bedtoolsWriteFasta(sample_out: str, sample_in: str):
     subprocess.run(["bedtools", "getfasta", "-s", "-fo", 
                     f"{sample_out}.fasta", "-fi", sample_in,
                     "-bed", f"{sample_out}.bed"])
+
+def runSpades(reads: list[str], out_dir: str):
+    args = ["spades.py", "-o", out_dir, "--careful"]
+    if len(reads) > 1:
+        args.extend(["-1", reads[0], "-2", reads[1]])
+    else:
+        args.extend(["-s", reads[0]])
+    subprocess.run(args)
+    
+def runMakeblastdb(in_fasta: str, db_name: str, db_type = "nucl"):
+    subprocess.run(["makeblastdb", "-in", in_fasta, 
+                    "-parse_seqids", "-out", db_name, "-dbtype", db_type])
