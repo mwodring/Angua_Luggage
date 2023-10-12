@@ -4,6 +4,7 @@
 """
 
 import argparse, sys, os, logging, logging.config
+from pathlib import Path
 from ..utils import SearchParams
 
 from ..LuggageInterface import blastParser
@@ -12,7 +13,7 @@ from pkg_resources import resource_filename
 
 #logging_conf = resource_filename("Angua_Luggage", "data/logging.conf")
 #logging.config.fileConfig(logging_conf)
-logging.basicConfig(stream = sys.stdout, level=logging.INFO)
+logging.basicConfig(stream = sys.stdout, level=logging.DEBUG)
 LOG = logging.getLogger(__name__)
 
 def parseArguments():
@@ -74,19 +75,24 @@ def getTerms(text_file: str) -> list:
 def runTextSearch(handler, args):
     whl = getTerms(args.searchterm) if args.searchterm.endswith(".txt") else [args.searchterm]
     bl = getTerms(args.blacklist) if args.blacklist.endswith(".txt") else [args.blacklist]
-    handler.findBlastFiles(ictv = args.ictv, blast_type = args.blast_type)
-        
-    queries_parsed, hits = handler.parseAlignments(search_params = 
-                                                   SearchParams(whl,
-                                                                args.minlen,
-                                                                args.bitscore,
-                                                                bl),
-                                                   get_all = args.get_all)
-    if hits > 0:
-        handler.hitsToCSV(os.path.splitext(
-                          os.path.basename(
-                          args.searchterm))[0])
-        handler.mergeCSVOutput()
+    samples = handler.findBlastFiles(ictv = args.ictv, 
+                                     blast_type = args.blast_type)
+    #Uses the last sample name and last search term as a quick check to see if .csvs exist already.
+    if not os.path.exists(os.path.join(
+                          args.out_dir, 
+                          "csv", 
+                          f"{samples[-1]}_{args.searchterm[-1]}.textsearch.csv")):
+        queries_parsed, hits = handler.parseAlignments(search_params = 
+                                                       SearchParams(whl,
+                                                                    args.minlen,
+                                                                    args.bitscore,
+                                                                    bl),
+                                                       get_all = args.get_all)
+        if hits > 0:
+            handler.hitsToCSV(os.path.splitext(
+                              os.path.basename(
+                              args.searchterm))[0])
+    handler.mergeCSVOutput()
     return queries_parsed, hits
 
 def getEmail():
@@ -100,29 +106,44 @@ def main():
     handler = blastParser("xml", args.in_dir, extend = args.extend)
     handler.addFolder("out", args.out_dir)
     
-    queries, hits = runTextSearch(handler, args)
-    LOG.info(f"Found {queries} queries with {hits} hits.")
+    rts_finished = os.path.join(args.out_dir, "text_search.finished")
+    if not os.path.exists(rts_finished):
+        queries, hits = runTextSearch(handler, args)
+        LOG.info(f"Found {queries} queries with {hits} hits.")
+        Path(rts_finished).touch()
     
-    if args.contigs and hits > 0:
-        LOG.info("Getting contigs with hits...")
-        handler.addFolder("contigs", args.contigs)
-        handler.findFastaFiles("contigs")
-        handler.hitContigsToFasta()
+        if args.contigs and hits > 0:
+            LOG.info("Getting contigs with hits...")
+            handler.addFolder("contigs", args.contigs)
+            handler.findFastaFiles("contigs")
+            handler.hitContigsToFasta()
+    else:
+        handler.merged_csv = os.path.join(args.out_dir, "csv", "all_samples.csv")
+        handler.addFolder("csv", os.path.join(args.out_dir, "csv"))
     
     if args.raw and not args.acc_to_fa:
         args.acc_to_fa == True
     
-    if args.acc_to_fa and hits > 0:
+    accessions_finished = os.path.join(args.out_dir, "hit_fastas", "fetch.finished")
+    if args.acc_to_fa and not os.path.exists(accessions_finished):
         while not args.email:
             print("Need an NCBI email for accessions:")
             args.email = getEmail()
         LOG.info("Fetching NCBI accessions...")
         handler.hitAccessionsToFasta(args.email, args.blast_type)
+        Path(accessions_finished).touch()
+    else:
+        handler.extendFolder("out", "acc", "hit_fastas")
     
-    if args.raw and hits > 0:
+    map_finished = os.path.join(args.out_dir, "bwa", "bwa.finished")
+    if args.raw and not os.path.exists(map_finished):
         LOG.info("Mapping reads to hits...")
-        tsvs = handler.runBwaTS(args.raw, "acc", 1)
-        handler.appendMappedToCSV()
+        tsvs = handler.runBwaTS(args.raw, "acc", args.extend)
+        Path(map_finished).touch()
+    else:
+        handler.extendFolder("out", "bwa", "bwa")
+    
+    handler.appendMappedToCSV()
         
 if __name__ == "__main__":
     sys.exit(main())

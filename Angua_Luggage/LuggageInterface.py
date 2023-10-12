@@ -4,6 +4,7 @@ from .exec_utils import *
 import json, importlib.resources
 from . import data
 import os, traceback, sys, shutil
+from pathlib import Path
 
 LOG = logging.getLogger(__name__)
 LOG.addHandler(logging.NullHandler())
@@ -34,11 +35,12 @@ class blastParser(fileHandler):
         self.merged_csv = out_csv.mergeCSVOutput(self.getFolder("csv"))
     
     def appendMappedToCSV(self, csv_file = None):
-        if not csv_file and self.merged_csv:
+        if not csv_file and hasattr(self, "merged_csv"):
             csv_file = self.merged_csv
         out_csv = csvHandler(["sample", "species", "read_no"])
-        for file in self.getFiles("bwa", ".tsv"):
-            out_csv.appendTSVContents(file)
+        tsvs = list(Path(self.getFolder("bwa")).rglob("*.[tT][sS][vV]"))
+        for tsv in tsvs:
+            out_csv.appendTSVContents(tsv)
         out_csv.outputMappedReads(dir_name = self.getFolder("csv"), 
                                   csv_file = csv_file)
                                   
@@ -64,13 +66,13 @@ class blastParser(fileHandler):
         self.updateFastaInfo()
         out_dir = os.path.join(self.getFolder("out"), "contigs")
         self.addFolder("parsed_contigs", out_dir)
-        self._toolBelt.outputContigBySpecies(out_dir, self.extend)
+        self._toolBelt.outputContigBySpecies(out_dir)
     
     def hitAccessionsToFasta(self, email: str, db_type="N"):
         db_type = "nuc" if db_type == "N" else "prot"
         out_dir = self.extendFolder("out", "acc", "hit_fastas")
         for file in self.getFiles("csv", ".textsearch.csv"):
-            sample_name = getSampleName(file, self.extend)
+            sample_name = getSampleName(file)
             accessions = csvHandler.getCSVAccessions(file)
             fa_filename = f"{sample_name}_accessions.fasta"
             out = os.path.join(out_dir, fa_filename)
@@ -251,7 +253,7 @@ class rmaHandler(blastParser):
             if contig_tools:
                 contig_filename = contig_tools[0].filename
             else:
-                LOG.error("No fasta/q file in contig directory. Did you make a typo?")
+                LOG.error("No fasta/q file in contig directory.")
                 sys.exit(1)
             self._toolBelt.blast2Rma(file, 
                                      self.getFolder("out"),

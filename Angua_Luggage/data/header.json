@@ -1,1 +1,1 @@
-["species", "query % coverage", "% identity", "contig length", "contig name", "NCBI accession", "Frame", "alignment", "matched length", "bitscore"]
+["species", "query % coverage", "% identity", "contig length", "contig_name", "NCBI accession", "Frame", "alignment", "matched length", "bitscore"]

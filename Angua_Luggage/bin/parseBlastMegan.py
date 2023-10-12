@@ -1,6 +1,6 @@
 from .parseBlastXML import getTerms
 from ..LuggageInterface import rmaHandler
-import argparse, logging, sys
+import argparse, logging, sys, os
 
 logging.basicConfig(stream = sys.stdout, level=logging.DEBUG)
 LOG = logging.getLogger(__name__)
@@ -46,17 +46,17 @@ def parseArguments():
 def main():
     args = parseArguments()
     
-    handler = rmaHandler("out", args.out_dir, extend = args.extend)
-    handler.addFolder("contigs", args.contigs)
+    handler = rmaHandler("out", os.path.abspath(args.out_dir), extend = args.extend)
+    handler.addFolder("contigs", os.path.abspath(args.contigs))
     handler.findFastaFiles("contigs")
     blast_kind = "Blast" + args.blast_type.upper()
     
     if args.runmegan:
-        handler.addFolder("xml", args.in_dir)
+        handler.addFolder("xml", os.path.abspath(args.in_dir))
         handler.blast2Rma(db = args.a2t, blast_kind = blast_kind)
     else:
         handler.addFolder("megan", args.in_dir)
-        handler.findRmas(db = args.a2t)
+        handler.findRmas(db = args.a2t, blast_kind = blast_kind)
     
     header = ["sample", "contig", "rank", "species"]
     handler.getMeganReport()

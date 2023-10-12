@@ -61,19 +61,6 @@ def getNumMappedReads(bwa_file: str) -> str:
 def outputSamHist(sorted_file: str, out_file: str):
     subprocess.run(["samtools", "coverage", sorted_file, "-m", "-o", out_file])
     
-def samToIndexedBam(in_sam: str, out_bam: str):
-    view_proc = subprocess.Popen(["samtools", "view", "-q", "0", "-F", 
-                                 "2304", "-bS", in_sam], stdout = subprocess.PIPE)
-    with open(out_bam, "w+") as bam:
-        bam.write(view_proc.stdout)
-    sort_proc = subprocess.Popen(["samtools", "sort", 
-                                  "out_bam"])
-    out_sorted = out_bam.replace(".bam", "_sort.bam")
-    with open(out_sorted, "w+") as sort:
-        sort.write(sort_proc.stdout)
-    subprocess.run(["samtools", "index", out_sorted])
-    return out_sorted
-    
 def runBedtools(out_file: str, bam: str):
     with open(out_file, "wb") as bg:
         subprocess.run(["bedtools", "genomecov", "-bg", "-ibam", bam],
@@ -85,6 +72,7 @@ def runBwa(fa: str, bwa_reads: list[str], out_file: str, threads = 12):
     LOG.info(index_result.stdout)
     proc_call = ["bwa-mem2", "mem", "-v", "3", "-t", str(threads), fa]
     proc_call.extend(bwa_reads)
+    LOG.debug(proc_call)
     with open(out_file, "w+") as sam:
         subprocess.run(proc_call, stdout=sam)
     

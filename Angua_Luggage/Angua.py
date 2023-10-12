@@ -74,7 +74,9 @@ class Blast:
 		
 		#Should process the stderr before marking something as complete.
 		blast_output, blast_error = blast_child.communicate()
-
+		
+		if blast_error:
+			LOG.error(blast_error)
 		LOG.info(f"Blast complete for query: {os.path.basename(input_file)}.")
 		
 class Angua(fileHandler):
@@ -193,7 +195,8 @@ class Angua(fileHandler):
 													"Spades.finished")
 		if os.path.exists(finished_file):
 			return ("Spades already completed, skipping.")
-		for file_R1 in self.getFiles("bbduk", "_R1.fastq.gz"):
+		for file_R1 in self.getFiles("bbduk", ["_R1.fastq.gz",
+											   "_R1.fastq"]):
 			in_reads = [file_R1]
 			file_R2 = file_R1.replace("_R1", "_R2")
 			if os.path.exists(file_R2):
@@ -297,7 +300,7 @@ class Angua(fileHandler):
 									 sample_name)
 		return 1
 
-	def stats(self):
+	def stats(self, options):
 		def renameReads(dataframe, new_name: str):
 			dataframe = dataframe[is_R1_mask]
 			dataframe = dataframe[["Sample", 
@@ -317,22 +320,25 @@ class Angua(fileHandler):
 		cut_samples = {sample : 
 					  sample.replace("_L001_R1_001", "_R1") for sample in df["Sample"]}
 		df["Sample"].replace(cut_samples, inplace = True)
-				       
-		# Trimmed data stats
-		input_trimmed_stats = os.path.join(self.getFolder("QC_trimmed_M"),
-										   "multiqc_data",
-										   "multiqc_general_stats.txt") 
-		t_df = pd.read_csv(input_trimmed_stats, sep = "\t")
-		t_df = renameReads(t_df, "trimmed_reads_failed")
-		df = pd.merge(df, t_df, on="Sample")
+		
+		if options.bbduk_adapters:
+			# Trimmed data stats
+			input_trimmed_stats = os.path.join(self.getFolder("QC_trimmed_M"),
+											   "multiqc_data",
+											   "multiqc_general_stats.txt") 
+			t_df = pd.read_csv(input_trimmed_stats, sep = "\t")
+			t_df = renameReads(t_df, "trimmed_reads_failed")
+			df = pd.merge(df, t_df, on="Sample")
 
-		assem_data = []
+			assem_data = []
+		
+		#Trinity stats:
 		if self.assembler == "Trinity":
 			for sample_name, norm_reads in self.getTrinityNormReads():
 					assem_data.append({"Sample": f"{sample_name}_R1",
 									   "normalised_reads" : norm_reads})
-		a_df = pd.DataFrame(assem_data)
-		df = pd.merge(df, a_df, on="Sample")
+			a_df = pd.DataFrame(assem_data)
+			df = pd.merge(df, a_df, on="Sample")
 
 		# Output stats
 		out_dir = self.getFolder("results")
@@ -434,6 +440,8 @@ def main():
 				angua.extendFolderMultiple("post_qc", ["QC_trimmed_F", "QC_trimmed_M"],
 													  ["FastQC", "MultiQC"])
 				angua.run_post_qc(options.qc_threads)
+		else:
+			angua.addFolder("bbduk", os.path.abspath(options.input))
 		
 		if options.assembler != "N":
 			if options.assembler == "trinity":
@@ -475,7 +483,7 @@ def main():
 			
 		if not options.no_stats:
 			angua.extendFolder("out", "results", "Results")
-			angua.stats()
+			angua.stats(options)
 		if not options.no_doc_env:
 			angua.document_env("Angua", angua_version, options)
 

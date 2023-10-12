@@ -113,12 +113,12 @@ class fileHandler:
         self._toolBelt.addBlastTool(filename, blast_type, ictv)
     
     def findBlastFiles(self, ictv = False, blast_type = "Blastn"):
-        blasts = self.getFiles("xml", ".xml")
-        num = 0
-        for xml in blasts:
-            num += 1
+        blasts = [file for file in self.getFiles("xml", ".xml")]
+        samples = [getSampleName(file, self.extend) for file in blasts]
+        for i, xml in enumerate(blasts):
             self.addBlast(xml, blast_type, ictv)
-        LOG.info(f"Found {num} xml files.")
+        LOG.info(f"Found {i} xml files.")
+        return samples
     
     def findFastaFiles(self, look_dir = "contigs") -> Generator[str]:
         fastas = self.getFiles(look_dir, [".fasta", ".fq", ".fastq"])
@@ -165,23 +165,30 @@ class csvHandler():
         if not "sample" in self.header_df:
             self.header_df.append("sample")
         df_merged.columns = self.header_df
-        all_csv = os.path.join(dir_name, "all_samples.csv")
+        all_csv = os.path.join(dir_name, "all_samples_textsearch.csv")
         df_merged.to_csv(all_csv, index = False)
         return all_csv
         
     def appendTSVContents(self, tsv: str):
         tmp_df = pd.read_csv(tsv, sep = "\t", header = None)
+        tmp_df.columns = self.header_df
         self.df_all.append(tmp_df)
     
+    def makeAllFromTSV(self):
+        return pd.concat(self.df_all)
+        
     #This could probably be refactored to be more multi-use and less fragile tbh.
     def outputMappedReads(self, dir_name: str, csv_file: str):
-        all_mapped_df = pd.concat(self.df_all)
-        all_mapped_df.columns = self.header_df
         merged_df = pd.read_csv(csv_file, sep = ",")
-        self.header_df = list(merged_df.columns).append("read_no")
-        full_df = all_mapped_df.merge(merged_df, how = "outer")
-        out_csv_file = os.path.join(dir_name, "all_samples.csv")
-        full_df.to_csv(out_csv_file, index = False, mode = "w")
+        reads_full_df = self.makeAllFromTSV()
+        reads_full_df = reads_full_df.rename(columns={"species" : "_species"})
+        merged_df["_species"] = merged_df["species"].map(subSeqName)
+        with_mapped_reads = merged_df.merge(reads_full_df,
+                                            on=["_species", "sample"])
+        with_mapped_reads = with_mapped_reads.drop_duplicates()
+        with_mapped_reads = with_mapped_reads.drop("_species", axis=1)
+        out_csv_file = os.path.join(dir_name, "all_samples_mapped.csv")
+        with_mapped_reads.to_csv(out_csv_file, index = False, mode = "w+")
     
     @staticmethod
     def outputHitsCSV(header, out_file: str, rows: list):
@@ -200,9 +207,9 @@ class toolBelt():
     
     def addFastaTool(self, filename, seqs = None, 
                      frame = 1, ID = "N/A", species = "N/A"):
-        #This feels like it repeats some code. Better way maybe?
         if not seqs:
-            seqs = SeqIO.parse(filename, "fasta")
+            seq_type = "fastq" if filename.endswith(".fastq") or filename.endswith(".fq") else "fasta"
+            seqs = SeqIO.parse(filename, seq_type)
             for seq in seqs:
                 self.tools["fasta"][filename].append(fastaTool(
                                                      filename = filename,
@@ -268,15 +275,17 @@ class toolBelt():
             LOG.info(f"{filename} written.")
                 
     #Note to self, write some functions to make this comprehension less Worse.            
-    def outputContigBySpecies(self, out_dir: str, extend = 0):
+    def outputContigBySpecies(self, out_dir: str):
         #This might need windows of some kind to avoid memory issues.
         for species in self.getUniqueSpecies():
             if species != "N/A" and species != "N_A":
                 species_tools = [tool for tool in self.getAllTools("fasta") 
                                 if tool.species == species]
                 underscore_species = subSeqName(species)
+                while len(underscore_species) > 150:
+                    underscore_species = "_".join(underscore_species.split()[:-1])
                 for tool in species_tools:
-                    sample_name = getSampleName(tool.filename, extend = extend)
+                    sample_name = getSampleName(tool.filename)
                     out_file = os.path.join(out_dir, 
                                             f"{sample_name}_{underscore_species}_contigs.fasta")
                     with open(out_file, "a") as fa:
@@ -549,7 +558,7 @@ class blastTool(Tool):
         info = []
         for hit in self.hits.values():
             species = hit["species"]
-            contig_name = hit["contig name"]
+            contig_name = hit["contig_name"]
             if contig_name == "":
                 logger.warn(f"No alignment found for {hit}.")
                 continue

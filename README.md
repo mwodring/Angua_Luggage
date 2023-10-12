@@ -26,7 +26,15 @@ You can do this from the directory containing the raw directory or using absolut
 
 Make sure paired reads end with R1_001.fastq.gz and R2_001.fastq.gz (Illumina default). Single-ended reads (R1_001.fastq.gz only) will also work, but for short (<50 bp) reads, please use -a spades or you may not get any contigs.
 
-Angua creates .finished files to track its progress and allow you to pick up where you left off. Remove these if you want to repeat a step for whatever reason.
+Angua creates .finished files to track its progress and allow you to pick up where you left off. Remove these if you want to repeat a step for whatever reason.  
+
+### Parameters 
+
+You may also use trimmed reads as an input, Angua will refer to them as 'raw' as it doesn't trim them, but QC can still be performed as normal.
+
+-a trinity assembles using Trinity, -a spades uses spades (it will move and rename scaffolds.fa files). Single or paired reads are inferred from filenames (R1, R2).
+
+-sort [blastn length] [blastx length] overrides the automatic 200 and 1000 contig sorting, and clusters the longer set of reads as usual. 
 
 ### Megan dbs
 
@@ -84,13 +92,67 @@ Angua_Luggage is a Bioinformatics tool bringing together a few useful pieces of 
 
 Luggage has two main functions. 
 
-- One (**parseBlast** and **parseBlastMegan**) is to quickly summarise pipeline (Blastn/X/Megan) output in .csv format (and output contigs matching desired species, if possible). 
+- One (**parseBlast** and **parseMegan**) is to quickly summarise pipeline (Blastn/X/Megan) output in .csv format (and output contigs matching desired species, if possible). 
 - The other (**Annotatr**) is to automate some basic annotations of contigs: pfam domains and ORFs, alongside coverage. This is to aid in triage in case of several novel viruses, or just a quick way of looking at coverage for diagnostic purposes.
 
 ### Additional databases
 
-For Annotatr, you will need a local copy of the current pfam database. 
+For Annotatr, you will need a local copy of the [current pfam database](https://ftp.ebi.ac.uk/pub/databases/Pfam/current_release/) HMM files.
+
+Follow the [pfam_scan docs](https://github.com/aziele/pfam_scan) if you get lost. 
+
+Broadly:
+
+```
+wget http://ftp.ebi.ac.uk/pub/databases/Pfam/current_release/Pfam-A.hmm.dat.gz
+wget http://ftp.ebi.ac.uk/pub/databases/Pfam/current_release/Pfam-A.hmm.gz
+```
+
+```
+mkdir pfamdb
+gunzip -c Pfam-A.hmm.dat.gz > pfamdb/Pfam-A.hmm.dat
+gunzip -c Pfam-A.hmm.gz > pfamdb/Pfam-A.hmm
+rm Pfam-A.hmm.gz Pfam-A.hmm.dat.gz
+```
+
+```
+hmmpress pfamdb/Pfam-A.hmm
+```
+
+Use this pfamdb/ folder as input to annotatr db_dir.
 
 ### Inputs to Luggage
 
 In all cases Luggage will need a directory. If you just have one file, please put it in a directory by itself first.
+
+### parseBlast
+
+```
+parseBlast [blast_dir] [out_dir] -wl [whitelist.txt] -bl [blacklist.txt] -r [trimmed_reads] -bt [N/X/P] -c [contigs] -e [NCBI email]
+```
+
+whitelist.txt can be a single word or a .txt file of words, one line per word. The same goes for blacklist. Luggage will take any items matching at least one of the whitelist terms, and exclude it if any of the blacklist terms are present.
+
+By giving parseBlast trimmed reads, it will map reads to NCBI accessions found in the Blast file. 
+
+By giving it contigs, it will label contigs by their hits and create .fasta files for you.
+
+### parseMegan
+
+To create a .csv file of Megan hits (virus only) and output contigs matching those hits:
+
+```
+parseMegan [in_dir] [out_dir] [contigs] -r [trimmed_reads] -a2t [(n/p)a2t)] -bt [N/P/X] -co
+```
+
+in_dir can be blast files (use -m to run Megan on them) or a directory of .rma6 files.
+
+### Annotatr (ORFs and protein families)
+
+```
+annotatr [in_dir] [out_dir] [pfam_db] -t [trimmed_reads]
+```
+
+Will generate graphs of ORFs and pfam hits, next to coverage determined by the same pipeline as back-mapper. 
+
+I would recommend using directories output by the parseBlast or parseMegan pipeline rather than contigs directly from e.g. Angua.
