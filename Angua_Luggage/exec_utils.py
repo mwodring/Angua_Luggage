@@ -125,7 +125,7 @@ def runTrinity(in_reads: list[str], out_file: str, mem: str, threads: int):
                 "--full_cleanup", 
                 "--output", out_file])
     proc = subprocess.run(args, stdout = subprocess.PIPE)
-    return trinity_proc.stdout
+    return proc.stdout
 
 def mmseqs2(in_file: str, output: str, perc, threads: int, tmp: str) -> None:
     subprocess.run(["mmseqs", "easy-cluster", in_file, output, tmp,
@@ -152,3 +152,7 @@ def runSpades(reads: list[str], out_dir: str):
 def runMakeblastdb(in_fasta: str, db_name: str, db_type = "nucl"):
     subprocess.run(["makeblastdb", "-in", in_fasta, 
                     "-parse_seqids", "-out", db_name, "-dbtype", db_type])
+                    
+def seqtkFilterLen(in_file: str, min_len: int, out_file: str):
+    with open(out_file, "w") as file:
+        subprocess.run(["seqtk", "seq", in_file, "-L", str(min_len)], stdout=file)

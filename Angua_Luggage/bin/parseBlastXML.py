@@ -13,7 +13,7 @@ from pkg_resources import resource_filename
 
 #logging_conf = resource_filename("Angua_Luggage", "data/logging.conf")
 #logging.config.fileConfig(logging_conf)
-logging.basicConfig(stream = sys.stdout, level=logging.DEBUG)
+logging.basicConfig(stream = sys.stdout, level=logging.INFO)
 LOG = logging.getLogger(__name__)
 
 def parseArguments():

@@ -108,6 +108,9 @@ class fileHandler:
                 files.append(file)
         return files
     
+    def flushFastas(self):
+        self._toolBelt.flushFastas()
+        
     #Simple but it's a function in case it later wants validation.
     def addBlast(self, filename: str, ictv = False, blast_type = "Blastn"):
         self._toolBelt.addBlastTool(filename, blast_type, ictv)
@@ -161,7 +164,7 @@ class csvHandler():
             df_merged = pd.concat(self.df_all)
         except ValueError:
             LOG.warn("No suitable hits found in any file; no csv to output.")
-            return
+            return False
         if not "sample" in self.header_df:
             self.header_df.append("sample")
         df_merged.columns = self.header_df
@@ -241,16 +244,21 @@ class toolBelt():
         return new_tool
     
     def addRmaTool(self, file: str, output: str, db: str, contigs: str, 
-                         sample_name: str, blast_kind = ""):
+                         sample_name: str, blast_kind = "",
+                         runRma = True):
         new_tool = rmaTool(file, output, db, contigs, sample_name, 
-                           blast_kind = blast_kind)
+                           blast_kind = blast_kind,
+                           runRma = runRma)
         self.tools["rma"].update({file : new_tool})
         return new_tool
     
     def findHitContigNames(self):
         for tool in self.getAllTools("blast"):
             print(tool.hit)
-
+    
+    def flushFastas(self):
+        self.tools["fasta"] = defaultdict(list)
+        
     #To run a process on all tools of type in all files.
     def process_all(self, tool_kind: str, func: str, 
                     *args, **kwargs) -> Generator[callable]:
@@ -615,12 +623,12 @@ class pfamTool(Tool):
 class rmaTool():
     def __init__(self, file: str, output: str, db: str, 
                  contigs: str, sample_name: str,
-                 blast_kind = ""):
+                 blast_kind = "", runRma = True):
         rma_file = os.path.splitext(os.path.basename(file))[0] + ".rma6"
-        self.filename = os.path.join(output, rma_file)
+        self.filename = os.path.join(output, rma_file) if runRma else file
         self.sample = sample_name
         self.contig_to_taxon = {}
-        if not os.path.exists(self.filename):
+        if runRma and not os.path.exists(self.filename):
             runBlast2Rma(file, output, db, contigs, blast_kind)
         
     def Rma2Info(self, sortby: str, out_dir: str) -> dict:
@@ -643,5 +651,6 @@ class rmaTool():
     def getHitCSVInfo(self):
         rows = []
         for c, taxon in self.contig_to_taxon.items():
+            print(c, taxon)
             rows.append([self.sample, c, taxon[0], taxon[1]])
         return rows

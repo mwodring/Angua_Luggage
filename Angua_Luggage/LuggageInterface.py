@@ -33,7 +33,8 @@ class blastParser(fileHandler):
                                   file_end = ".textsearch.csv"):
             out_csv.appendCSVContents(file, sample = True)
         self.merged_csv = out_csv.mergeCSVOutput(self.getFolder("csv"))
-    
+        return self.merged_csv
+        
     def appendMappedToCSV(self, csv_file = None):
         if not csv_file and hasattr(self, "merged_csv"):
             csv_file = self.merged_csv
@@ -64,6 +65,7 @@ class blastParser(fileHandler):
     
     def hitContigsToFasta(self):
         self.updateFastaInfo()
+        print(self.toolBelt.tools["fasta"])
         out_dir = os.path.join(self.getFolder("out"), "contigs")
         self.addFolder("parsed_contigs", out_dir)
         self._toolBelt.outputContigBySpecies(out_dir)
@@ -275,6 +277,7 @@ class rmaHandler(blastParser):
                           
     def findRmas(self, db: str, blast_kind: str):
         for file in self.getFiles("megan", ".rma6"):
+            sample_name = getSampleName(file, extend = self.extend)
             contig_tools = self._toolBelt.getToolsByName("fasta", sample_name)
             contig_filename = contig_tools[0].filename
             sample_name = getSampleName(file, extend = self.extend)
@@ -282,8 +285,9 @@ class rmaHandler(blastParser):
                                       self.getFolder("out"),
                                       db,
                                       contig_filename,
-                                      blast_kind,
-                                      sample_name)
+                                      blast_kind = blast_kind,
+                                      sample_name = sample_name,
+                                      runRma = False)
         
 class spadesTidy(fileHandler):
     def spadesToDir(self, out_dir: str, cleanup = False):

@@ -21,7 +21,7 @@ from .LuggageInterface import blastParser, spadesTidy
 from collections.abc import Generator
 
 #Doesn't use a file right this second but it will.
-logging.basicConfig(stream = sys.stdout, level=logging.DEBUG)
+logging.basicConfig(stream = sys.stdout, level=logging.INFO)
 LOG = logging.getLogger(__name__)
 
 @dataclass
@@ -209,15 +209,20 @@ class Angua(fileHandler):
 		Path(finished_file).touch()
 		return "Spades complete."
 		
-	### Sort and rename contigs
+	### Sort and rename contigs - uses SeqIO directly until I can get seqtk to rename like this.
 	def sort_fasta_by_length(self, min_len: int):
-		out = self.extendFolder("contigs", f"sorted_{min_len}", str(min_len))
-		for file in self.getFiles("contigs", ".fasta"):
-			sample_name = getSampleName(file, extend=1)
-			output_file = os.path.join(out, 
+		output_dir = self.extendFolder("contigs", f"sorted_{min_len}", str(min_len))
+		for input_file in self.getFiles("contigs", ".fasta"):
+			sample_name = getSampleName(input_file, extend=1)
+			output_file = os.path.join(output_dir, 
 									   f"{sample_name}_sorted_{min_len}.fasta")
-			self._toolBelt.filterFasta(file, output_file, "len", min_len)
-	
+			with open(output_file, "w+") as contigs_out:
+				for seq_record in SeqIO.parse(open(input_file, mode = "r"), "fasta"):
+					if(len(seq_record.seq) >= int(min_len)):
+						seq_record.id = f"{sample_name}_{seq_record.id}"
+						seq_record.description = f"{sample_name}_{seq_record.description}"
+						SeqIO.write(seq_record, contigs_out, "fasta")
+					
 	@check_complete
 	def run_mmseqs2(self, perc, threads: int, in_dir = None,
 											  out_dir = None) -> int:
@@ -417,7 +422,7 @@ class backMapper(blastParser):
 			shutil.rmtree(tmp_dir)
 
 def main():
-	angua_version = 3
+	angua_version = 4
 	options = parse_arguments()
 
 	### Main Pipeline

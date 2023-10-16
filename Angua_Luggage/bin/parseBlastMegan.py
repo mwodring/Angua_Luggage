@@ -61,9 +61,9 @@ def main():
     header = ["sample", "contig", "rank", "species"]
     handler.getMeganReport()
     handler.hitsToCSV(header)
-    handler.mergeCSVOutput(header)
+    csv = handler.mergeCSVOutput(header)
     
-    if args.contigsout:
+    if args.contigsout and csv:
         handler.hitContigsToFasta()
 	
 if __name__ == "__main__":
