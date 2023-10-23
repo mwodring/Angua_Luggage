@@ -65,7 +65,6 @@ class blastParser(fileHandler):
     
     def hitContigsToFasta(self):
         self.updateFastaInfo()
-        print(self.toolBelt.tools["fasta"])
         out_dir = os.path.join(self.getFolder("out"), "contigs")
         self.addFolder("parsed_contigs", out_dir)
         self._toolBelt.outputContigBySpecies(out_dir)
@@ -102,33 +101,33 @@ class blastParser(fileHandler):
         self.findFastaFiles("raw")
         self.extendFolder("out", "bwa", "bwa")
         self.extendFolder("out", "hist", "Histograms")
-        all_trimmed = (file for file in self.getFiles("raw") if "R1" in file)
+        all_trimmed = [file for file in self.getFiles("raw") if "R1" in file]
         tsv_files = []
         all_samples_dict = {}
         tmp_dir = self.extendFolder(in_dir_type, "tmp", "tmp")
         for fasta in self.getFiles(in_dir_type, ".fasta"):
             dir_name = os.path.splitext(os.path.basename(fasta))[0]
             self.addFastaFile(fasta)
-            sample_name = getSampleName(fasta, extend = extend) if text_search else getSampleName(next(all_trimmed), extend = 1)
+            sample_name = getSampleName(fasta, extend = extend) if text_search else getSampleName(all_trimmed[0], extend = 1)
             seq_names, tmp_fas = self.makeTempFastas(sample_name, fasta)
             all_samples_dict[sample_name] = dict(zip(seq_names, tmp_fas))
-        for sample_name, seq_to_tmp in all_samples_dict.items():
-            bwa_reads = self.findFastaBySample(sample_name, dir_kind = "raw")
-            for seq_name, tmp_fa in seq_to_tmp.items():
-                underscore_seq_name = subSeqName(seq_name)
-                out_dir = self.extendFolder("bwa", dir_name, dir_name)
-                out_file = os.path.join(out_dir, 
-                                        f"{sample_name}_{underscore_seq_name}.sam")
-                sorted_file = os.path.join(out_dir, 
-                                           f"{sample_name}_{underscore_seq_name}.sorted.bam")
-                if not os.path.exists(sorted_file):
-                    runBwa(tmp_fa, bwa_reads, out_file, threads = threads)
-                    samSort(sorted_file, out_file, mapq, flag)
-                    hist_dir = self.extendFolder("hist", dir_name, dir_name)
-                    hist_file = os.path.join(hist_dir, 
-                                             f"{sample_name}_{underscore_seq_name}_hist.txt")
-                    outputSamHist(sorted_file, hist_file)
-                    self.coverageToTSV(out_file, sample_name, seq_name)
+            for sample_name, seq_to_tmp in all_samples_dict.items():
+                bwa_reads = self.findFastaBySample(sample_name, dir_kind = "raw")
+                for seq_name, tmp_fa in seq_to_tmp.items():
+                    underscore_seq_name = subSeqName(seq_name)
+                    out_dir = self.extendFolder("bwa", dir_name, dir_name)
+                    out_file = os.path.join(out_dir, 
+                                            f"{sample_name}_{underscore_seq_name}.sam")
+                    sorted_file = os.path.join(out_dir, 
+                                               f"{sample_name}_{underscore_seq_name}.sorted.bam")
+                    if not os.path.exists(sorted_file):
+                        runBwa(tmp_fa, bwa_reads, out_file, threads = threads)
+                        samSort(sorted_file, out_file, mapq, flag)
+                        hist_dir = self.extendFolder("hist", dir_name, dir_name)
+                        hist_file = os.path.join(hist_dir, 
+                                                 f"{sample_name}_{underscore_seq_name}_hist.txt")
+                        outputSamHist(sorted_file, hist_file)
+                        self.coverageToTSV(out_file, sample_name, seq_name)
         self.removeFolder("tmp")
         Cleanup(self.getFolder(in_dir_type), [".amb", ".ann", ".bwt", ".pac", ".sa"])
         Cleanup(self.getFolder("bwa"), [".sam"])
@@ -181,8 +180,8 @@ class SRA(fileHandler):
 class Annotatr(fileHandler):
     def generateorfTools(self):
         self._toolBelt.getORFs(self.getFolder("contigs"), 
-                                 self.getFolder("aa"), 
-                                 self.getFolder("ORF_nt"))
+                               self.getFolder("aa"), 
+                               self.getFolder("ORF_nt"))
     
     def getORFs(self, out_dir: str, contig_dir = None):
         self.addFolder("ORFs", out_dir)
@@ -194,46 +193,50 @@ class Annotatr(fileHandler):
         self.ORF_file = os.path.join(self.getFolder("contigs"), "ORFs.rdata")
         self.grl_file = os.path.join(self.getFolder("contigs"), "grl.rdata")
             
-    def runPfam(self, db_dir: str, add_text = "_virus"):
+    def runPfam(self, db_dir: str):
         pfam_dir = self.extendFolder("ORFs", "pfam", "pfam_json")
         for file in self.getFiles("aa", ".fasta"):
             fasta_filename = os.path.basename(file)
             sample_name = "_".join(fasta_filename.split("_")[:-3])
-            outfile = os.path.join(pfam_dir, f"{sample_name}{add_text}.json")
+            outfile = os.path.join(pfam_dir, f"{sample_name}.json")
             if not os.path.exists(outfile):
                 self._toolBelt.runPfam(db_dir, file, outfile)
             self.pfam_grl_file = os.path.join(pfam_dir, "pfam_grl.rdata")
-            self.pfam_df_file = os.path.join(pfam_dir, "pfam_df.rdata")
+            self.pfam_df_file = os.path.join(pfam_dir, "pfam_dfs.rdata")
     
     def getAnnotations(self, trimmed_dir: str, no_plot = False, gff3 = True):
         self._toolBelt.getAnnotations(self.getFolder("pfam"), self.ORF_file, gff3)
         if not no_plot:
             self.addFolder("trimmed", trimmed_dir)
+            self.findFastaFiles("trimmed")
             self.backMap()
             plot_dir = self.extendFolder("ORFs", "plots", "ORF_plots")
             self._toolBelt.plotAnnotations(self.pfam_grl_file, self.pfam_df_file, 
                                            plot_dir, self.getFolder("bedgraph"))
 
+    #Probably better to use back-map as Angua uses it!
     def backMap(self, threads = 23, mapq = 0, flag = 2304, out_dir = ""):
         backmap_dir = self.extendFolder("contigs", "backmap", "backmap") if not out_dir else self.getFolder("out")
         sorted_files = {}
         for file in self.getFiles("contigs", ".fasta"):
-            sample_name = getSampleName(file, extend = self.extend)
-            out_file = os.path.join(backmap_dir, f"{sample_name}.bam")
+            basefile = os.path.basename(file)
+            contig_name = os.path.splitext(basefile)[0]
+            sample_name = "_".join(basefile.split("_")[:2])
+            out_file = os.path.join(backmap_dir, f"{contig_name}.bam")
             if not os.path.exists(out_file):
                 current_trimmed = self.findTrimmed(sample_name)
-                sam_file = os.path.splitext(out_file)[0] + ".sam"
+                sam_file = os.path.join(backmap_dir, f"{contig_name}.sam")
                 runBwa(file, current_trimmed, sam_file, threads)
                 bam_file = os.path.splitext(out_file)[0] + ".bam"
-                samSort(sam_file, bam_file)
+                samSort(bam_file, sam_file, mapq = mapq, flag = flag)
                 Cleanup(backmap_dir, ".sam")
-            sorted_files.update({sample_name : out_file})
+            sorted_files.update({contig_name : out_file})
         #Probably set flags to keep or not keep them.
         Cleanup([self.getFolder("contigs")], [".64", ".pac", ".fai", 
                                               ".ann", ".amb", ".0123"])    
         out_dir = self.extendFolder("pfam", "bedgraph", "bedGraph")
-        for sample, file in sorted_files.items():
-            out_file = os.path.join(out_dir, f"{sample}.bedGraph")
+        for contig, file in sorted_files.items():
+            out_file = os.path.join(out_dir, f"{contig}.bedGraph")
             if not os.path.exists(f"{out_file}.gz"):
                 self.bamToBG(out_file, file)
         
@@ -269,7 +272,7 @@ class rmaHandler(blastParser):
         self._toolBelt.getMeganReports(out_dir = report_dir)
     
     def updateFastaInfo(self):
-        self._toolBelt.mapFastaToRma()
+        self._toolBelt.mapFastaToRma(self.extend)
     
     def hitsToCSV(self, header: list):
         super().hitsToCSV(tool_kind = "rma",

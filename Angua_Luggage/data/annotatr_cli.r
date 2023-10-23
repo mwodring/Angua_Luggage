@@ -71,12 +71,18 @@ ORF_from_fasta <- function(contig_dir, aa_dir, nt_dir, ORF_min_len) {
 
 parse_pfam_json <- function(dir, ORFs_file) {
     all_jsons <- setup_files(dir, filetype = "json")
-    if(file.exists("pfam_grl.rdata") && file.exists("pfam_df.rdata")) {
+    if(file.exists("pfam_grl.rdata") && file.exists("pfam_dfs.rdata")) {
     return(list("Skipping pfam-parse step: already complete."))
     } else {
     ORFs <- load(file = ORFs_file)
-    pfam_grl <- GRangesList()
+    pfam_grl <- list()
+    pfam_dfs <- list()
     for(filename in all_jsons){
+        contigs_name_vec <- filename %>%
+                           tools::file_path_sans_ext() %>%
+                           str_split("_") %>%
+                           unlist()
+        contigs_file_name <- paste(contigs_name_vec, collapse = "_")
         pfam_df <- fromJSON(filename, simplifyDataFrame = TRUE)
         seq_names <- pfam_df$seq$name
         if(!(is.null(seq_names))){
@@ -89,62 +95,60 @@ parse_pfam_json <- function(dir, ORFs_file) {
                 seq_from <- as.numeric(unlist(pfam_df$seq$from))
                 pfam_gr <- GRanges(seqnames = Rle(seq_names),
                            ranges = IRanges(seq_from, end = seq_to, names = pfam_df$name))
-                new_pfam_grl <- GRangesList(pfam_gr)
-                pfam_grl <- append(pfam_grl, new_pfam_grl, after = length(pfam_grl))
+                pfam_grl[[contigs_file_name]] <- pfam_gr
+                pfam_dfs[[contigs_file_name]] <- pfam_df
             options(warn) } else {
             next }
             }
     save(pfam_grl, file = "pfam_grl.rdata")
-    save(pfam_df, file = "pfam_df.rdata")
+    save(pfam_dfs, file = "pfam_dfs.rdata")
     }
     }
 
 #Coverage with aid of https://blog.liang2.tw/posts/2016/01/plot-seq-depth-gviz/#convert-sequencing-depth-to-bedgraph-format
 generate_orf_plots <- function(grl_file, fasta_dir, out_dir, pfam_file, pfam_df_file, bedgraph_dir) { 
     load(file = grl_file)
+    orfs <- unlist(all_grls)
     load(file = pfam_file)
     load(file = pfam_df_file)
-    pfam <- unlist(pfam_grl)
-    listed_contigs <- as.list(all_grls)
     file_end <- "_plot.jpg"
     file_names <- setup_files(fasta_dir, "fasta")
     log <- list()
     setwd(out_dir)
     
     i <- 1
-    for(filename in file_names){
-        sample_name_vec <- filename %>%
-                           tools::file_path_sans_ext() %>%
-                           str_split("_") %>%
-                           unlist()
-        sample_name <- paste(sample_name_vec[1:2], collapse = "_") 
+    for(contig_file_name in names(pfam_dfs)){ 
+        grange <- all_grls[[i]]
+        get_prots <- pfam_dfs[[contig_file_name]]
+        contig_full_file_name <- paste0(contig_file_name, ".fasta")
+        current_contig_dir <- paste(contig_file_name, "plots", sep = "_")
+        dir.create(current_contig_dir, showWarnings = FALSE)
+        setwd(current_contig_dir)
         all_con_bios <- fasta_dir %>%
-                        paste(filename, sep = "/") %>%
+                        paste(contig_full_file_name, sep = "/") %>%
                         FaFile() %>%
                         scanFa()
-        bg_file <- paste0(bedgraph_dir, paste0("/", sample_name, ".bedGraph.gz"))
-        bedgraph_dt <- fread(bg_file, col.names = c('chromosome', 'start', 'end', 'value'))     
-        
-        for(grange in listed_contigs){
-            current_contig_dir <- paste(tools::file_path_sans_ext(filename), "plots", sep = "_")
-            dir.create(current_contig_dir, showWarnings = FALSE)
-            setwd(current_contig_dir)
-            
-            seq_names <- as.list(seqnames(grange))
-            for(seq_name in seq_names) {
-                bedgraph_dt_contig <- filter(bedgraph_dt, chromosome == seq_name)
-                current_contig <- filter(grange, seqnames == seq_name)
-                get_prots <- filter(pfam, seqnames %in% names(current_contig))
-                orig_contig <- all_con_bios[grepl(seq_name, names(all_con_bios))]
-                
-                if(!(is.null(orig_contig)) & (length(get_prots) > 0)) {
-                    orig_gr <- GRanges(seqnames = Rle(seq_name, 1),
+        bg_file <- paste0(bedgraph_dir, paste0("/", contig_file_name, ".bedGraph.gz"))
+        bedgraph_dt <- fread(bg_file, col.names = c('chromosome', 'start', 'end', 'value'))        
+        current_orfs <- pfam_grl[[contig_file_name]]
+
+        for(orig_contig_name in unique(bedgraph_dt[["chromosome"]])){
+                current_contig <- grange[grepl(orig_contig_name, seqnames(grange))]  
+                if(length(current_contig) <= 0) {
+                    print(paste("No ORFs to plot for:", contig_file_name, orig_contig_name, sep=" "))
+                    next
+                    }
+                orig_contig <- all_con_bios[grepl(orig_contig_name, names(all_con_bios))]
+                bedgraph_dt_contig <- filter(bedgraph_dt, chromosome == orig_contig_name)
+                if((length(orig_contig) > 0) & (length(get_prots) > 0)) {
+                    orig_gr <- GRanges(seqnames = Rle(orig_contig_name, 1),
                                        ranges = IRanges(start = 1, width = width(orig_contig), names = c("orig")))
-                    seq_shorter <- seq_name %>%
+                    seq_shorter <- orig_contig_name %>%
                                    str_split("_", n= Inf, simplify = FALSE) %>%
                                    unlist() %>%
                                    setdiff(c("TRINITY"))
                     seq_title <- paste(seq_shorter[2:length(seq_shorter)], collapse = "")
+                    
                     ORF_names <- character()
                     for(name in names(current_contig)) {
                         current_name <- name %>%
@@ -156,51 +160,59 @@ generate_orf_plots <- function(grl_file, fasta_dir, out_dir, pfam_file, pfam_df_
                     
                     options(ucscChromosomeNames=FALSE)
                     details <- function(identifier, ...) {
-                        proteins <- get_prots[grepl(identifier, seqnames(get_prots))]
+                        proteins <- filter(get_prots, grepl(identifier, seq$name))
                         if(length(proteins) <= 0) {
                             d <- data.frame(protein = c("NA"))
                             } else {
-                            d <- data.frame(protein = names(proteins))
+                            d <- data.frame(protein = proteins$desc)
                             }
                         grid.text(paste(d$protein, collapse = "\n"), draw = TRUE)
                     }
                     
-                    dtrack <- DetailsAnnotationTrack(range = current_contig, 
+                    contig_chr <- GRanges(seqnames = Rle(orig_contig_name, length(seqnames(current_contig))),
+                                  ranges(current_contig, use.mcols=TRUE), strand=strand(current_contig))
+                    
+                    dtrack <- DetailsAnnotationTrack(range = contig_chr, 
                                                      name = seq_title, 
-                                                     id = ORF_names, 
+                                                     id = ORF_names,
                                                      fun = details)
-                                                     
+                    
                     displayPars(dtrack) <- list(fontcolor.item = "black", 
-                                            col = "darkblue", fill = "lightblue", detailsBorder.col = "blue",
-                                            showFeatureId = TRUE, background.title = "darkgray")
+                                                col = "darkblue", fill = "lightblue", detailsBorder.col = "blue",
+                                                showFeatureId = TRUE, background.title = "darkgray")
         
                     gtrack <- GenomeAxisTrack(orig_gr, littleTicks = TRUE, cex = 1)
-                
+                    
                     datrack <- DataTrack(range = bedgraph_dt_contig, genome = orig_gr,
-                                         chromosome = seq_name,
+                                         chromosome = orig_contig_name,
                                          name = "Coverage")
-
+                    
                     datrack2 <- DataTrack(range = bedgraph_dt_contig, genome = orig_gr,
-                                         chromosome = seq_name,
+                                         chromosome = orig_contig_name,
                                          name = "Line") 
-                                         
+                    
                     displayPars(datrack) <- list(type = "gradient", 
                                                          gradient = 
-                                                         c("mintcream", "lightskyblue1", "paleturquoise3", "lightsalmon", "orange", "orangered1"),
+                                                         c("mintcream", "lightskyblue1", "paleturquoise3", "lightsalmon", 
+                                                           "orange", "orangered1"),
                                                          background.title = "darkgray", cex.axis = 1)
                     displayPars(datrack2) <- list(type = "a", alpha.title = 0, col= "black")                 
+                    
                     otrack <- OverlayTrack(trackList=list(datrack, datrack2), 
                                            name="Coverage", background.title = "darkgray")
                     
-                    jpeg_name <- paste0(seq_name, file_end)
+                    jpeg_name <- paste0(orig_contig_name, file_end)
                     jpeg(jpeg_name, width = 700, height = 500)
                     
                     tryCatch( {
-                        plotTracks(list(dtrack, gtrack, otrack), add53= TRUE, 
+                        plotTracks(list(dtrack,
+                                        gtrack,
+                                        otrack), 
+                                        add53= TRUE, 
                                    stacking = "squish", stackHeight = 0.9, add = TRUE)
                     },
                         error=function(e) {
-                        message(paste0('One of the plots broke: ', filename, ": ", seq_name))
+                        message(paste0('One of the plots broke: ', contig_file_name, ": ", orig_contig_name))
                         print(e)
                     },
                         warning = function(w) {
@@ -210,13 +222,10 @@ generate_orf_plots <- function(grl_file, fasta_dir, out_dir, pfam_file, pfam_df_
                     )
                     dev.off()
                 } else {
-                log <- append(log, paste0("Unable to plot ", seq_name, " suggest manual review."), after=length(log)) 
-                log <- append(log, toString(get_prots), after=length(log))
-                log <- append(log, toString(bedgraph_dt_contig), after=length(log))
+                print(paste0("Unable to plot ", orig_contig_name, " suggest manual review."))
                 }
-            }
-        setwd("..")
         }
+        i <- i + 1
+        setwd("..")
     }
-    return(list(log))
     }

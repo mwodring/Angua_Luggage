@@ -32,24 +32,20 @@ def parseArguments():
     parser.add_argument("--gff3",
                         help = "Output annotations as a GFF3 file.",
                         action = "store_true")
-    parser.add_argument("-ex", "--extend",
-                        help = "Number of underscore extensions to the file. -Angua specific-",
-                        required = False,
-                        type = int)
                         
     return parser.parse_args()
     
 def main():
-    logging.basicConfig(stream = sys.stdout)
-    LOG = logging.getLogger(__name__) 
-
+    logging.basicConfig(stream = sys.stdout, level=logging.DEBUG)
+    LOG = logging.getLogger(__name__)
+    
     args = parseArguments()
-    plotter = Annotatr("contigs", args.in_dir, args.extend)
-    plotter.getORFs(args.out_dir)
-    plotter.runPfam(args.db_dir)
+    plotter = Annotatr("contigs", os.path.abspath(args.in_dir))
+    plotter.getORFs(os.path.abspath(args.out_dir))
+    plotter.runPfam(os.path.abspath(args.db_dir))
     plotter.getAnnotations(no_plot = args.no_plot, 
                            gff3 = args.gff3, 
-                           trimmed_dir=args.trimmed)
+                           trimmed_dir=os.path.abspath(args.trimmed))
     
 if __name__ == "__main__":
     sys.exit(main())

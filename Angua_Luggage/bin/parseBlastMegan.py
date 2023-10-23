@@ -2,7 +2,7 @@ from .parseBlastXML import getTerms
 from ..LuggageInterface import rmaHandler
 import argparse, logging, sys, os
 
-logging.basicConfig(stream = sys.stdout, level=logging.DEBUG)
+logging.basicConfig(stream = sys.stdout, level=logging.INFO)
 LOG = logging.getLogger(__name__)
 
 def parseArguments():

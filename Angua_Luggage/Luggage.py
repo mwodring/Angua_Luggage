@@ -125,10 +125,14 @@ class fileHandler:
     
     def findFastaFiles(self, look_dir = "contigs") -> Generator[str]:
         fastas = self.getFiles(look_dir, [".fasta", ".fq", ".fastq"])
-        if not fastas:
-            LOG.critical("No .fasta files in folder!")
+        gz_fastas = self.getFiles(look_dir, [".fq.gz", ".fastq.gz"])
+        for fasta in gz_fastas:
+            self._toolBelt.addFastaFromStdout(fasta, unZipStdout(fasta))
         for fasta in fastas:
             self.addFastaFile(fasta)
+        if len(self._toolBelt.tools["fasta"]) < 1:
+            LOG.critical("No .fasta files in folder!")
+            sys.exit(1)
     
 class csvHandler():
     __slots__ = ("df_all", "header_df")
@@ -229,6 +233,19 @@ class toolBelt():
                                                 frame = frame, 
                                                 contig_id = contig_ID, 
                                                 species = species)})
+    
+    def addFastaFromStdout(self, filename, stdout,
+                                 frame = 1, 
+                                 ID = "N/A", species = "N/A"):
+        seq_type = "fastq" if filename.endswith(".fastq.gz") or filename.endswith(".fq.gz") else "fasta"
+        seqs = SeqIO.parse(stdout, seq_type)
+        for seq in seqs:
+            self.tools["fasta"][filename].append(fastaTool(
+                                                 filename = filename,
+                                                 seq = seq, 
+                                                 frame = frame, 
+                                                 contig_id = seq.id, 
+                                                 species = species))
         
     def addBlastTool(self, filename: str, ictv: bool, blast_type = "Blastn"):
         self.tools["blast"].update({filename : blastTool(filename, blast_type, ictv)})
@@ -406,7 +423,7 @@ class toolBelt():
         self.addRmaTool(file, output, db, contigs, sample_name,
                         blast_kind = blast_kind)
     
-    def mapFastaToRma(self):
+    def mapFastaToRma(self, extend = 1):
         for tool in self.getAllTools("rma"):
             sample = getSampleName(tool.filename)
             fasta_filename = self.getToolsByName("fasta", sample)[0].filename
@@ -593,17 +610,16 @@ class orfTool():
     def getORFs(self, aa_dir: str, nt_dir: str):
         self.init_r()
         r_output = r.r['ORF_from_fasta'](self.contig_dir, aa_dir, nt_dir, 150)
-        log = r_output.rx2("log")
         self.grl_file = os.path.join(self.contig_dir, "grl.rdata")
-        LOG.info(log)
     
     def plotAnnotations(self, pfam_grl_file: str, pfam_df_file: str, 
                               plot_img_dir: str, backmap_dir: str):
         self.init_r()
-        r.r['generate_orf_plots'](self.grl_file, 
-                                  self.contig_dir, plot_img_dir, 
-                                  pfam_grl_file, pfam_df_file, backmap_dir)
-        
+        r_output = r.r['generate_orf_plots'](self.grl_file, 
+                                             self.contig_dir, plot_img_dir, 
+                                             pfam_grl_file, pfam_df_file, 
+                                             backmap_dir)
+                                             
 @dataclass
 class pfamTool(Tool):
     outfile: str
@@ -651,6 +667,5 @@ class rmaTool():
     def getHitCSVInfo(self):
         rows = []
         for c, taxon in self.contig_to_taxon.items():
-            print(c, taxon)
             rows.append([self.sample, c, taxon[0], taxon[1]])
         return rows

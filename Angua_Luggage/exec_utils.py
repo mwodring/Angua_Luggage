@@ -11,7 +11,15 @@ LOG.addHandler(logging.NullHandler())
 
 def runGzip(file: str):
     subprocess.run(["pigz", file])
+    
+def unZip(file: str):
+    subprocess.run(["pigz", "-d", file])
 
+def unZipStdout(file: str):
+    proc = subprocess.Popen(["pigz", "-dc", file], stdout = subprocess.PIPE,
+                            universal_newlines = True)
+    return proc.stdout
+    
 def fetchSRA(output_folder: str, accession: str):
     LOG.info(f"Fetching {accession}")
     #.strip is added due to trailing newlines.
@@ -73,9 +81,9 @@ def runBwa(fa: str, bwa_reads: list[str], out_file: str, threads = 12):
     proc_call = ["bwa-mem2", "mem", "-v", "3", "-t", str(threads), fa]
     proc_call.extend(bwa_reads)
     LOG.debug(proc_call)
-    with open(out_file, "w+") as sam:
+    with open(out_file, "wb") as sam:
         subprocess.run(proc_call, stdout=sam)
-    
+        
 def samSort(bam_file: str, sam_file: str, mapq: int, flag: int):
     with open(bam_file, "w+") as bam:
         subprocess.run(["samtools", "view", "-q", str(mapq), "-F", str(flag), 
