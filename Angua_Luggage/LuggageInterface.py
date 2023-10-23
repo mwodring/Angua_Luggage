@@ -190,8 +190,9 @@ class Annotatr(fileHandler):
         self.extendFolder("ORFs", "aa", "aa")
         self.extendFolder("ORFs", "ORF_nt", "nt")
         self.generateorfTools()
-        self.ORF_file = os.path.join(self.getFolder("contigs"), "ORFs.rdata")
-        self.grl_file = os.path.join(self.getFolder("contigs"), "grl.rdata")
+        self.ORF_file = os.path.join(self.getFolder("aa"), "ORFs.rdata")
+        self.grl_file = os.path.join(self.getFolder("aa"), "grl.rdata")
+        self.has_orfs = os.path.join(self.getFolder("aa"), "hits.txt")
             
     def runPfam(self, db_dir: str):
         pfam_dir = self.extendFolder("ORFs", "pfam", "pfam_json")
@@ -216,10 +217,13 @@ class Annotatr(fileHandler):
 
     #Probably better to use back-map as Angua uses it!
     def backMap(self, threads = 23, mapq = 0, flag = 2304, out_dir = ""):
-        backmap_dir = self.extendFolder("contigs", "backmap", "backmap") if not out_dir else self.getFolder("out")
+        backmap_dir = self.extendFolder("ORFs", "backmap", "backmap") if not out_dir else self.getFolder("out")
         sorted_files = {}
+        hits = [line.strip() for line in open(self.has_orfs, "r").readlines()]
         for file in self.getFiles("contigs", ".fasta"):
             basefile = os.path.basename(file)
+            if not basefile in hits:
+                continue
             contig_name = os.path.splitext(basefile)[0]
             sample_name = "_".join(basefile.split("_")[:2])
             out_file = os.path.join(backmap_dir, f"{contig_name}.bam")

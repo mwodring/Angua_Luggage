@@ -5,7 +5,7 @@ Created on Fri May 19 15:51:33 2023
 @author: mwodring
 """
 
-import logging, os, re, subprocess, shutil
+import logging, os, re, subprocess, shutil, sys
 import pandas as pd
 #TODO: have pandas do the csv in/out.
 import csv
@@ -610,7 +610,7 @@ class orfTool():
     def getORFs(self, aa_dir: str, nt_dir: str):
         self.init_r()
         r_output = r.r['ORF_from_fasta'](self.contig_dir, aa_dir, nt_dir, 150)
-        self.grl_file = os.path.join(self.contig_dir, "grl.rdata")
+        self.grl_file = os.path.join(aa_dir, "grl.rdata")
     
     def plotAnnotations(self, pfam_grl_file: str, pfam_df_file: str, 
                               plot_img_dir: str, backmap_dir: str):

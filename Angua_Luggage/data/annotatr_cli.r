@@ -25,11 +25,11 @@ setup_files <- function(dir, filetype) {
 
 ORF_from_fasta <- function(contig_dir, aa_dir, nt_dir, ORF_min_len) {
     import_packages()
-    all_fastas <- setup_files(contig_dir, "fasta")
+    setwd(aa_dir)
     if (file.exists("ORFs.rdata") && file.exists("grl.rdata")) {
-    log <- "ORFs already found, skipping ORF step."
-    return(list(log))
+    print("ORFs already found, skipping ORF step.")
     } else {
+    all_fastas <- setup_files(contig_dir, "fasta")
     log_list <- list()
     all_grls <- GRangesList()
     for (fasta in all_fastas){
@@ -57,15 +57,18 @@ ORF_from_fasta <- function(contig_dir, aa_dir, nt_dir, ORF_min_len) {
             writeXStringSet(ORFs_aa, aa_filename, append=FALSE, compress=FALSE, format="fasta")
             setwd(contig_dir)
             } else {
-            log_list <- append(log_list, paste0("No ORFs of sufficient length found for ", filename, "."))
+            print(paste0("No ORFs of sufficient length found for ", filename, "."))
             all_fastas <- setdiff(all_fastas, fasta)
             next
             }
         }
     all_ORFs <- unlistGrl(all_grls)
+    setwd(aa_dir)
     save(all_ORFs, file = "ORFs.rdata")
     save(all_grls, file = "grl.rdata")
-    return(list("log"))
+    success_file <- file("hits.txt")
+    writeLines(all_fastas, success_file)
+    close(success_file)
     }
     }
 
@@ -107,6 +110,9 @@ parse_pfam_json <- function(dir, ORFs_file) {
 
 #Coverage with aid of https://blog.liang2.tw/posts/2016/01/plot-seq-depth-gviz/#convert-sequencing-depth-to-bedgraph-format
 generate_orf_plots <- function(grl_file, fasta_dir, out_dir, pfam_file, pfam_df_file, bedgraph_dir) { 
+    print(grl_file)
+    print(pfam_file)
+    print(pfam_df_file)
     load(file = grl_file)
     orfs <- unlist(all_grls)
     load(file = pfam_file)
@@ -135,7 +141,7 @@ generate_orf_plots <- function(grl_file, fasta_dir, out_dir, pfam_file, pfam_df_
         for(orig_contig_name in unique(bedgraph_dt[["chromosome"]])){
                 current_contig <- grange[grepl(orig_contig_name, seqnames(grange))]  
                 if(length(current_contig) <= 0) {
-                    print(paste("No ORFs to plot for:", contig_file_name, orig_contig_name, sep=" "))
+                    print(paste("No pfam hits for:", contig_file_name, orig_contig_name, sep=" "))
                     next
                     }
                 orig_contig <- all_con_bios[grepl(orig_contig_name, names(all_con_bios))]
