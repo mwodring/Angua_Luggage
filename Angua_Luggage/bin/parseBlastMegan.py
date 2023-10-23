@@ -20,7 +20,8 @@ def parseArguments():
     parser.add_argument("-r", "--raw",
                         help = "Directory of raw reads if bwa is desired. (For single-ended reads blasts.)")
     parser.add_argument("-a2t",
-                        help = "Location of database file for Megan accessions to taxa.")
+                        help = "Location of database file for Megan accessions to taxa.",
+                        required = True)
     
     #OTHER
     parser.add_argument("--ictv",

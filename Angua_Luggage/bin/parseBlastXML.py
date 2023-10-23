@@ -3,7 +3,7 @@
 @author: mwodring
 """
 
-import argparse, sys, os, logging, logging.config
+import argparse, sys, os, logging, logging.config, re
 from pathlib import Path
 from ..utils import SearchParams
 
@@ -95,9 +95,12 @@ def runTextSearch(handler, args):
     handler.mergeCSVOutput()
     return queries_parsed, hits
 
-def getEmail():
-    email = input()
-    #Now validate.
+def getEmail(email = None):
+    if not email:
+        print("Need a valid NCBI email for accessions, please type it in now:")
+        email = input()
+    regex = re.compile("^[A-Za-z0-9](([a-zA-Z0-9,=\.!\-#|\$%\^&\*\+/\?_`\{\}~]+)*)@(?:[0-9a-zA-Z-]+\.)+[a-zA-Z]{2,9}$")
+    email = email if re.fullmatch(regex, email) else None
     return email
     
 def main():
@@ -127,23 +130,22 @@ def main():
     accessions_finished = os.path.join(args.out_dir, "hit_fastas", "fetch.finished")
     if args.acc_to_fa and not os.path.exists(accessions_finished):
         while not args.email:
-            print("Need an NCBI email for accessions:")
-            args.email = getEmail()
+           args.email = getEmail(args.email)
         LOG.info("Fetching NCBI accessions...")
         handler.hitAccessionsToFasta(args.email, args.blast_type)
         Path(accessions_finished).touch()
-    else:
+    elif args.acc_to_fa:
         handler.extendFolder("out", "acc", "hit_fastas")
     
     map_finished = os.path.join(args.out_dir, "bwa", "bwa.finished")
-    if args.raw and not os.path.exists(map_finished):
-        LOG.info("Mapping reads to hits...")
-        tsvs = handler.runBwaTS(args.raw, "acc", args.extend)
-        Path(map_finished).touch()
-    else:
-        handler.extendFolder("out", "bwa", "bwa")
-    
-    handler.appendMappedToCSV()
+    if args.raw:
+        if not os.path.exists(map_finished):
+            LOG.info("Mapping reads to hits...")
+            tsvs = handler.runBwaTS(args.raw, "acc", args.extend)
+            Path(map_finished).touch()
+        else:
+            handler.extendFolder("out", "bwa", "bwa")
+        handler.appendMappedToCSV()
         
 if __name__ == "__main__":
     sys.exit(main())

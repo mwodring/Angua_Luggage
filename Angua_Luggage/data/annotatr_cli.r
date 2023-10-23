@@ -110,9 +110,6 @@ parse_pfam_json <- function(dir, ORFs_file) {
 
 #Coverage with aid of https://blog.liang2.tw/posts/2016/01/plot-seq-depth-gviz/#convert-sequencing-depth-to-bedgraph-format
 generate_orf_plots <- function(grl_file, fasta_dir, out_dir, pfam_file, pfam_df_file, bedgraph_dir) { 
-    print(grl_file)
-    print(pfam_file)
-    print(pfam_df_file)
     load(file = grl_file)
     orfs <- unlist(all_grls)
     load(file = pfam_file)

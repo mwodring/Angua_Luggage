@@ -7,7 +7,7 @@ Created on Tue Jan 31 15:19:59 2023
 
 from setuptools import setup, find_packages
 
-VERSION = '0.1.5' 
+VERSION = '0.1.7' 
 DESCRIPTION = 'Angua, a Bioinformatics pipeline using Blast, and its extension, Luggage.'
 LONG_DESCRIPTION = 'Angua, a Bioinformatics pipeline using Blast, and its extension, Luggage.'
 
