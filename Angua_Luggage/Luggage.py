@@ -354,9 +354,11 @@ class toolBelt():
         seq_names, tmp_fas = [], []
         for i, tool in enumerate(self.tools["fasta"][filename]):
             seq_name = subSeqName(tool.seq.description)
-            species = " ".join(tool.seq.description.split(" ")[1:])
+            species = "_".join(tool.seq.description.split(" ")[1:])
             tool.updateSpecies(species)
             bef_path_seq_name = seq_name.split("path=")[0]
+            while len(bef_path_seq_name) > 150:
+                bef_path_seq_name = "_".join(bef_path_seq_name.split()[:-1])
             tmp_file = os.path.join(tmp_dir, 
                                     f"{sample_name}_{bef_path_seq_name}_tmp.fasta")
             seq_names.append(species)

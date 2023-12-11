@@ -1,9 +1,9 @@
 import subprocess, os, logging, pysam
+from pysam import SamtoolsError
 import urllib
 from subprocess import PIPE
 from Bio import Entrez
 from shutil import move as shmove
-#TODO: Move the generation to fasta tool / fileHandler.
 from Bio import SeqIO
 
 LOG = logging.getLogger(__name__)
@@ -84,15 +84,20 @@ def runBwa(fa: str, bwa_reads: list[str], out_file: str, threads = 12):
     with open(out_file, "wb") as sam:
         subprocess.run(proc_call, stdout=sam)
         
-def samSort(bam_file: str, sam_file: str, mapq: int, flag: int):
+def samSort(bam_file: str, sam_file: str, mapq: int, flag: int) -> int:
     with open(bam_file, "w+") as bam:
         subprocess.run(["samtools", "view", "-q", str(mapq), "-F", str(flag), 
                         "-bS", sam_file], stdout = bam)
-    pysam.sort("-o", bam_file, bam_file)
+    try: 
+        pysam.sort("-o", bam_file, bam_file)
+    except SamtoolsError:
+        LOG.warn(f"Empty sam file for {sam_file}.")
+        return 1
     subprocess.run(["samtools", "index", bam_file])
     idx_txt_out = os.path.splitext(sam_file)[0] + "_stats.txt"
     with open(idx_txt_out, "w+") as txt:
         subprocess.run(["samtools", "idxstats", bam_file], stdout = txt)
+    return 0
                                  
 def runPfam(fasta_file, outfile, db_dir):
     with open(outfile, "w") as output:

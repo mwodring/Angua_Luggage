@@ -115,6 +115,7 @@ class blastParser(fileHandler):
                 bwa_reads = self.findFastaBySample(sample_name, dir_kind = "raw")
                 for seq_name, tmp_fa in seq_to_tmp.items():
                     underscore_seq_name = subSeqName(seq_name)
+                    underscore_seq_name = underscore_seq_name.split("path=")[0]
                     out_dir = self.extendFolder("bwa", dir_name, dir_name)
                     out_file = os.path.join(out_dir, 
                                             f"{sample_name}_{underscore_seq_name}.sam")
@@ -122,17 +123,23 @@ class blastParser(fileHandler):
                                                f"{sample_name}_{underscore_seq_name}.sorted.bam")
                     if not os.path.exists(sorted_file):
                         runBwa(tmp_fa, bwa_reads, out_file, threads = threads)
-                        samSort(sorted_file, out_file, mapq, flag)
+                        sam_failed = samSort(sorted_file, out_file, mapq, flag)
                         hist_dir = self.extendFolder("hist", dir_name, dir_name)
                         hist_file = os.path.join(hist_dir, 
                                                  f"{sample_name}_{underscore_seq_name}_hist.txt")
+                        if sam_failed:
+                            Path(hist_file).touch()
+                            continue
                         outputSamHist(sorted_file, hist_file)
                         self.coverageToTSV(out_file, sample_name, seq_name)
+        self.BwaCleanup(in_dir_type)
+        return tsv_files
+            
+    def BwaCleanup(self, in_dir_type: str):
         self.removeFolder("tmp")
         Cleanup(self.getFolder(in_dir_type), [".amb", ".ann", ".bwt", ".pac", ".sa"])
         Cleanup(self.getFolder("bwa"), [".sam"])
-        return tsv_files
-            
+        
     @staticmethod
     def coverageToTSV(bwa_file: str, 
                       sample_name: str, seq_name: str) -> str:
@@ -141,8 +148,9 @@ class blastParser(fileHandler):
         if num_mapped_reads == 0:
             LOG.info(f"No reads mapped for {seq_name} to {sample_name}.")
         seq_name = subSeqName(seq_name)
+        bef_path_seq_name = seq_name.split("path=")[0]
         tsv_file = os.path.join(bwa_dir, 
-                                f"{sample_name}_{seq_name}.tsv")
+                                f"{sample_name}_{bef_path_seq_name}.tsv")
         csvHandler.mappedReadsTSV(tsv_file, sample_name, seq_name, num_mapped_reads)
         return tsv_file
         
@@ -226,6 +234,7 @@ class Annotatr(fileHandler):
                 continue
             contig_name = os.path.splitext(basefile)[0]
             sample_name = "_".join(basefile.split("_")[:2])
+            contig_name = contig_name.split("path=")[0]
             out_file = os.path.join(backmap_dir, f"{contig_name}.bam")
             if not os.path.exists(out_file):
                 current_trimmed = self.findTrimmed(sample_name)

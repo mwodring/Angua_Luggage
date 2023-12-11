@@ -283,8 +283,17 @@ class Angua(fileHandler):
 		return 1
 	
 	@check_complete
+	def run_megan_blastn(self, na_db: str) -> int:
+		self.run_megan("BlastN", na_db)
+		return 1
+		
+	@check_complete
+	def run_megan_blastx(self, pa_db: str) -> int: 
+		self.run_megan("BlastX", pa_db)
+		return 1
+	
 	def run_megan(self, blast_type: str, megan_db: str, 
-						in_dir = None, out_dir = None, contigs_dir = None):
+						in_dir = None, out_dir = None, contigs_dir = None) -> int:
 		blast_lower = blast_type.lower()
 		in_dir = self.getFolder(blast_lower) if not in_dir else self.getFolder(in_dir)
 		out_dir = self.getFolder(f"megan_{blast_lower}") if not out_dir else self.getFolder(out_dir)
@@ -475,7 +484,7 @@ def main():
 		if options.megan_na2t:
 			angua.extendFolder("out", "megan", "Megan")
 			blastn = angua.extendFolder("megan", "megan_blastn", "BlastN")
-			angua.run_megan("BlastN", options.megan_na2t)
+			angua.run_megan_blastn(options.megan_na2t)
 							
 		if options.nr_db:
 			out_dir = angua.extendFolder("out", "blastx", "BlastX")
@@ -484,7 +493,7 @@ def main():
 		if options.megan_pa2t:
 			angua.extendFolder("out", "megan", "Megan")
 			blastx = angua.extendFolder("megan", "megan_blastx", "BlastX")
-			angua.run_megan("BlastX", options.megan_pa2t)
+			angua.run_megan_blastx(options.megan_pa2t)
 			
 		if not options.no_stats:
 			angua.extendFolder("out", "results", "Results")
